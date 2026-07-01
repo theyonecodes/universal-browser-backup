@@ -1,0 +1,56 @@
+{
+  "version": "2.0.0",
+  "defaults": {
+    "backupDestination": "%USERPROFILE%\\Desktop",
+    "excludeFromBackup": [
+      "Cache",
+      "Code Cache",
+      "Service Worker",
+      "cache2",
+      "startupCache",
+      "GPUCache",
+      "Thumbnails",
+      "blob_storage",
+      "Network",
+      "Session Storage"
+    ],
+    "robocopyRetries": 3,
+    "robocopyWait": 2,
+    "maxLogFiles": 30
+  },
+  "chromiumPaths": {
+    "local": [
+      "Google\\Chrome",
+      "Microsoft\\Edge",
+      "BraveSoftware\\Brave-Browser",
+      "Vivaldi",
+      "Opera\\Opera stable",
+      "Opera Software\\Opera GX Stable",
+      "Arc",
+      "Floorp",
+      "Zen Browser",
+      "Iron",
+      "SRWare Iron",
+      "Epic Privacy Browser",
+      "Comodo Dragon",
+      "Yandex\\YandexBrowser",
+      "Samsung\\Internet",
+      "Avast Browser",
+      "AVG Secure Browser",
+      "CCleaner Browser",
+      "UC Browser"
+    ],
+    "programFiles": [
+      "Google\\Chrome",
+      "Microsoft\\Edge",
+      "BraveSoftware\\Brave-Browser",
+      "Vivaldi",
+      "Opera\\Opera stable",
+      "Opera Software\\Opera GX Stable"
+    ]
+  },
+  "geckoPaths": {
+    "appData": "Mozilla\\Firefox",
+    "localAppData": "Mozilla\\Firefox"
+  }
+}

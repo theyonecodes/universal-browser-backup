@@ -1,0 +1,15 @@
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# PowerShell
+*.pssc
+*.psrc
