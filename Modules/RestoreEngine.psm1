@@ -16,9 +16,21 @@ function Test-RestorePrerequisites {
     $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
     $issues = @()
 
+    # Verify backup integrity (includes SHA256 checks of critical files)
     $integrity = Test-BackupIntegrity -BackupPath $BackupPath
     if (-not $integrity.Valid) {
         $issues += "Backup integrity check failed: $($integrity.Message)"
+    } else {
+        # Additional validation: ensure backup matches target browser
+        $backupBrowser = $manifest.browser
+        if ($backupBrowser.type -ne $Browser.Type) {
+            $issues += "Backup browser type mismatch: expected '$($Browser.Type)', found '$($backupBrowser.type)'"
+        }
+        # Optional: warn if browser names don't exactly match (but types do)
+        if ($backupBrowser.name -notlike "*$($browser.Name.Split(' ')[0])*" -and 
+            $browser.Name -notlike "*$($backupBrowser.name.Split(' ')[0])*") {
+            $issues += "Browser name mismatch: backup is from '$($backupBrowser.name)', restoring to '$($Browser.Name)'"
+        }
     }
 
     $profiles = Get-BrowserProfiles -Browser $Browser

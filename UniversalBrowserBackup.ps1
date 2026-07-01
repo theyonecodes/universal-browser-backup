@@ -106,16 +106,45 @@ switch ($PSCmdlet.ParameterSetName) {
 
         if ($AllProfiles) {
             $profiles = Get-BrowserProfiles -Browser $target
+            $jobs = @()
+            
             foreach ($p in $profiles) {
                 Write-Log -Message "Backing up profile: $($p.Name)" -Level "INFO" -LogFile $logFile
-                $result = New-BrowserBackup -Browser $target -ProfileName $p.Name `
-                    -Destination $dest -ExcludeDirs $excludes -LogFile $logFile -Force:$Force -WhatIf:$WhatIf
-
+                
+                # Start backup job
+                $job = Start-Job -ScriptBlock {
+                    param($target, $profileName, $dest, $excludes, $logFile, $Force, $WhatIf)
+                    Import-Module "$using:scriptRoot\Modules\Config.psm1" -Force
+                    Import-Module "$using:scriptRoot\Modules\BrowserDetection.psm1" -Force
+                    Import-Module "$using:scriptRoot\Modules\Logging.psm1" -Force
+                    Import-Module "$using:scriptRoot\Modules\BackupEngine.psm1" -Force
+                    Import-Module "$using:scriptRoot\Modules\RestoreEngine.psm1" -Force
+                    
+                    # Use the passed log file (do not re-initialize)
+                    $result = New-BrowserBackup -Browser $target -ProfileName $profileName `
+                        -Destination $dest -ExcludeDirs $excludes -LogFile $logFile -Force:$Force -WhatIf:$WhatIf
+                    return $result
+                } -ArgumentList $target, $p.Name, $dest, $excludes, $logFile, $Force, $WhatIf
+                
+                $jobs += [PSCustomObject]@{
+                    Job = $job
+                    ProfileName = $p.Name
+                }
+            }
+            
+            # Wait for all jobs to complete and process results
+            foreach ($jobObj in $jobs) {
+                Write-Log -Message "Waiting for backup job: $($jobObj.ProfileName)" -Level "INFO" -LogFile $logFile
+                $result = Wait-Job -Job $jobObj.Job | Receive-Job
+                
                 if ($result.Success) {
                     Write-Host "Backup completed: $($result.Path) ($($result.SizeMB) MB)" -ForegroundColor Green
                 } else {
                     Write-Host "Backup failed: $($result.Message)" -ForegroundColor Red
                 }
+                
+                # Clean up job
+                Remove-Job -Job $jobObj.Job
             }
         } else {
             $result = New-BrowserBackup -Browser $target -ProfileName $Profile `

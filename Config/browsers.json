@@ -18,36 +18,40 @@
     "robocopyWait": 2,
     "maxLogFiles": 30
   },
-  "chromiumPaths": {
+"chromiumPaths": {
     "local": [
-      "Google\\Chrome",
-      "Microsoft\\Edge",
-      "BraveSoftware\\Brave-Browser",
-      "Vivaldi",
-      "Opera\\Opera stable",
-      "Opera Software\\Opera GX Stable",
-      "Arc",
-      "Floorp",
-      "Zen Browser",
-      "Iron",
-      "SRWare Iron",
-      "Epic Privacy Browser",
-      "Comodo Dragon",
-      "Yandex\\YandexBrowser",
-      "Samsung\\Internet",
-      "Avast Browser",
-      "AVG Secure Browser",
-      "CCleaner Browser",
-      "UC Browser"
+        "Google\\Chrome",
+        "Microsoft\\Edge",
+        "BraveSoftware\\Brave-Browser",
+        "Vivaldi",
+        "Opera\\Opera stable",
+        "Opera Software\\Opera GX Stable",
+        "Arc",
+        "Floorp",
+        "Zen Browser",
+        "Thorium",
+        "Ladybird",
+        "Iron",
+        "SRWare Iron",
+        "Epic Privacy Browser",
+        "Comodo Dragon",
+        "Yandex\\YandexBrowser",
+        "Samsung\\Internet",
+        "Avast Browser",
+        "AVG Secure Browser",
+        "CCleaner Browser",
+        "UC Browser"
     ],
-    "programFiles": [
-      "Google\\Chrome",
-      "Microsoft\\Edge",
-      "BraveSoftware\\Brave-Browser",
-      "Vivaldi",
-      "Opera\\Opera stable",
-      "Opera Software\\Opera GX Stable"
-    ]
+"programFiles": [
+    "Google\\Chrome",
+    "Microsoft\\Edge",
+    "BraveSoftware\\Brave-Browser",
+    "Vivaldi",
+    "Opera\\Opera stable",
+    "Opera Software\\Opera GX Stable",
+    "Thorium",
+    "Ladybird"
+]
   },
   "geckoPaths": {
     "appData": "Mozilla\\Firefox",

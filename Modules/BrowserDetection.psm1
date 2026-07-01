@@ -10,8 +10,14 @@ function Get-ChromiumBrowsers {
     $programFilesX86 = ${env:ProgramFiles(x86)}
 
     foreach ($browserPath in $Config.chromiumPaths.local) {
-        $userDataPath = Join-Path $localAppData "$browserPath\User Data"
-        if (Test-Path $userDataPath) {
+        $basePath = Join-Path $localAppData $browserPath
+        # Check for both "User Data" (old) and "User Data V2" (Chromium 120+)
+        $userDataPath = @(
+            Join-Path $basePath "User Data",
+            Join-Path $basePath "User Data V2"
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+        
+        if ($userDataPath) {
             $localStatePath = Join-Path $userDataPath "Local State"
             if (Test-Path $localStatePath) {
                 $browserName = $browserPath -split '\\' | Select-Object -Last 1

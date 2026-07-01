@@ -24,7 +24,7 @@ $script:jobRunning = $false
 $script:cancelRequested = $false
 
 $controls = @{}
-$window.FindName('txtDestination').Text = $env:USERPROFILE\Desktop
+$window.FindName('txtDestination').Text = "$env:USERPROFILE\Desktop"
 $window.FindName('btnAction').Add_Click({ Invoke-SelectedAction })
 $window.FindName('btnCancel').Add_Click({ Request-Cancel })
 $window.FindName('btnBrowse').Add_Click({ Browse-Destination })
