@@ -1,211 +1,312 @@
+# BackupEngine.psm1 — robocopy backup + manifest + SHA256 verification.
+
+Set-StrictMode -Version Latest
+
 function New-Manifest {
     [CmdletBinding()]
+    [OutputType([string])]
     param(
-        [string]$BackupPath,
-        [PSCustomObject]$Browser,
-        [string]$ProfileName,
-        [int]$RobocopyExitCode,
-        [string]$LogFile
+        [Parameter(Mandatory)] [string]$BackupPath,
+        [Parameter(Mandatory)] $Browser,
+        [Parameter(Mandatory)] [string]$ProfileName,
+        [int]$RobocopyExitCode = 0,
+        [string]$LogFile,
+        [string[]]$CriticalFiles
     )
+
+    if (-not $CriticalFiles) {
+        $CriticalFiles = @(
+            "Bookmarks", "Bookmarks.bak", "History", "Login Data",
+            "Preferences", "Secure Preferences", "Cookies", "Web Data"
+        )
+    }
 
     $manifestPath = Join-Path $BackupPath "manifest.json"
 
-    $criticalFiles = @(
-        "Bookmarks", "Bookmarks.bak", "History", "Login Data",
-        "Preferences", "Secure Preferences", "Cookies", "Web Data"
-    )
-
-    $checksums = @{}
-    foreach ($file in $criticalFiles) {
+    $checksums = [ordered]@{}
+    foreach ($file in $CriticalFiles) {
         $filePath = Join-Path $BackupPath $file
-        if (Test-Path $filePath) {
+        if (Test-Path -LiteralPath $filePath -PathType Leaf) {
             try {
-                $hash = (Get-FileHash -Path $filePath -Algorithm SHA256).Hash
+                $hash = (Get-FileHash -LiteralPath $filePath -Algorithm SHA256 -ErrorAction Stop).Hash
                 $checksums[$file] = $hash
             } catch {
-                $checksums[$file] = "ERROR: $_"
+                $checksums[$file] = "ERROR: $($_.Exception.Message)"
             }
         }
     }
 
-    $files = Get-ChildItem -Path $BackupPath -Recurse -File -ErrorAction SilentlyContinue
-    $totalSize = ($files | Measure-Object -Property Length -Sum).Sum
-    $fileCount = ($files | Measure-Object).Count
+    $files = @(Get-ChildItem -LiteralPath $BackupPath -Recurse -File -Force -ErrorAction SilentlyContinue)
+    $totalSize = ($files | Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
+    if ($null -eq $totalSize) { $totalSize = 0 }
+    $fileCount = $files.Count
 
-    $manifest = @{
-        version     = "2.0.0"
+    $manifest = [ordered]@{
+        version     = "2.1.0"
         timestamp   = (Get-Date).ToString("o")
-        browser     = @{
-            name    = $Browser.Name
-            type    = $Browser.Type
-            version = $Browser.Version
+        browser     = [ordered]@{
+            name    = [string]$Browser.Name
+            type    = [string]$Browser.Type
+            version = [string]$Browser.Version
+            rawName = [string]$Browser.RawName
         }
         profile     = $ProfileName
-        source      = $Browser.ProfilePath
+        source      = [string]$Browser.ProfilePath
         destination = $BackupPath
-        stats       = @{
-            fileCount = $fileCount
-            totalSize = $totalSize
-            totalSizeMB = [math]::Round($totalSize / 1MB, 2)
+        stats       = [ordered]@{
+            fileCount    = $fileCount
+            totalSize    = $totalSize
+            totalSizeMB  = [math]::Round($totalSize / 1MB, 2)
         }
-        robocopy    = @{
+        robocopy    = [ordered]@{
             exitCode = $RobocopyExitCode
             logFile  = $LogFile
         }
         checksums   = $checksums
-        machine     = @{
-            name     = $env:COMPUTERNAME
-            user     = $env:USERNAME
-            os       = [System.Environment]::OSVersion.VersionString
+        machine     = [ordered]@{
+            name = [string]$env:COMPUTERNAME
+            user = [string]$env:USERNAME
+            os   = [System.Environment]::OSVersion.VersionString
         }
     }
 
-    $manifest | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -Encoding UTF8
+    try {
+        $json = $manifest | ConvertTo-Json -Depth 10
+        Set-Content -LiteralPath $manifestPath -Value $json -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        Write-Log -Message "Failed to write manifest: $_" -Level "ERROR" -LogFile $LogFile
+        return $null
+    }
+
     return $manifestPath
 }
 
 function Test-BackupIntegrity {
     [CmdletBinding()]
+    [OutputType([hashtable])]
     param(
-        [string]$BackupPath
+        [Parameter(Mandatory)] [string]$BackupPath
     )
 
-    $manifestPath = Join-Path $BackupPath "manifest.json"
-    if (-not (Test-Path $manifestPath)) {
-        return @{
-            Valid   = $false
-            Message = "No manifest.json found"
-        }
+    if (-not (Test-Path -LiteralPath $BackupPath -PathType Container)) {
+        return @{ Valid = $false; Message = "Backup path does not exist: $BackupPath"; Manifest = $null }
     }
 
-    $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
-    $issues = @()
+    $manifestPath = Join-Path $BackupPath "manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        return @{ Valid = $false; Message = "No manifest.json found"; Manifest = $null }
+    }
 
-    foreach ($file in $manifest.checksums.PSObject.Properties) {
-        $filePath = Join-Path $BackupPath $file.Name
-        if (-not (Test-Path $filePath)) {
-            $issues += "Missing file: $($file.Name)"
-            continue
-        }
-        if ($file.Value -ne "ERROR") {
-            $actualHash = (Get-FileHash -Path $filePath -Algorithm SHA256).Hash
-            if ($actualHash -ne $file.Value) {
-                $issues += "Checksum mismatch: $($file.Name)"
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return @{ Valid = $false; Message = "Cannot parse manifest.json: $_"; Manifest = $null }
+    }
+
+    $issues = [System.Collections.Generic.List[string]]::new()
+
+    if ($manifest.checksums) {
+        foreach ($file in $manifest.checksums.PSObject.Properties) {
+            $filePath = Join-Path $BackupPath $file.Name
+            if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
+                [void]$issues.Add("Missing file: $($file.Name)")
+                continue
+            }
+            $expected = [string]$file.Value
+            if ($expected.StartsWith("ERROR")) {
+                [void]$issues.Add("Original checksum failure carried over: $($file.Name)")
+                continue
+            }
+            try {
+                $actual = (Get-FileHash -LiteralPath $filePath -Algorithm SHA256 -ErrorAction Stop).Hash
+                if ($actual -ne $expected) {
+                    [void]$issues.Add("Checksum mismatch: $($file.Name)")
+                }
+            } catch {
+                [void]$issues.Add("Cannot re-hash '$($file.Name)': $_")
             }
         }
     }
 
-    $actualCount = (Get-ChildItem -Path $BackupPath -Recurse -File -ErrorAction SilentlyContinue |
-        Measure-Object).Count
-    if ($actualCount -ne $manifest.stats.fileCount) {
-        $issues += "File count mismatch: expected $($manifest.stats.fileCount), got $actualCount"
-    }
+    try {
+        $actualCount = @(Get-ChildItem -LiteralPath $BackupPath -Recurse -File -Force -ErrorAction SilentlyContinue).Count
+        if ($manifest.stats -and $manifest.stats.fileCount -and ($actualCount -ne [int]$manifest.stats.fileCount)) {
+            [void]$issues.Add("File count mismatch: expected $($manifest.stats.fileCount), got $actualCount")
+        }
+    } catch { }
 
     return @{
-        Valid   = $issues.Count -eq 0
-        Message = if ($issues.Count -eq 0) { "Backup is valid" } else { $issues -join "; " }
+        Valid    = ($issues.Count -eq 0)
+        Message  = if ($issues.Count -eq 0) { "Backup is valid" } else { ($issues -join "; ") }
         Manifest = $manifest
+        Issues   = $issues.ToArray()
     }
+}
+
+function Invoke-RobocopyMirror {
+    [CmdletBinding()]
+    [OutputType([int])]
+    param(
+        [Parameter(Mandatory)] [string]$Source,
+        [Parameter(Mandatory)] [string]$Destination,
+        [string[]]$ExcludeDirs,
+        [int]$Retries = 3,
+        [int]$Wait = 2,
+        [string]$LogFile,
+        [string]$RedirectOutput
+    )
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
+        throw "Source path not found: $Source"
+    }
+    if (-not (Test-Path -LiteralPath $Destination -PathType Container)) {
+        New-Item -ItemType Directory -Path $Destination -Force -ErrorAction Stop | Out-Null
+    }
+
+    $args = @(
+        "`"$Source`"",
+        "`"$Destination`"",
+        "/MIR", "/NP", "/BYTES", "/NDL", "/NFL", "/NC", "/NS",
+        "/R:$Retries",
+        "/W:$Wait",
+        "/MT:4"
+    )
+
+    if ($ExcludeDirs) {
+        foreach ($d in $ExcludeDirs) {
+            if ([string]::IsNullOrWhiteSpace($d)) { continue }
+            $args += "/XD"
+            $args += "`"$((Join-Path $Source $d) -replace '/+$','')`""
+        }
+    }
+
+    if ($LogFile) {
+        $logDir = Split-Path -Parent $LogFile
+        if (-not (Test-Path -LiteralPath $logDir)) {
+            New-Item -ItemType Directory -Path $logDir -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        $args += "/LOG+:`"$LogFile`""
+    }
+
+    if ($RedirectOutput) {
+        $redirectDir = Split-Path -Parent $RedirectOutput
+        if (-not (Test-Path -LiteralPath $redirectDir)) {
+            New-Item -ItemType Directory -Path $redirectDir -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+    }
+
+    $redirectPath = if ($RedirectOutput) { $RedirectOutput } else { [System.IO.Path]::GetTempFileName() }
+    $process = Start-Process -FilePath "robocopy.exe" -ArgumentList $args `
+        -Wait -PassThru -NoNewWindow `
+        -RedirectStandardOutput $redirectPath
+    return [int]$process.ExitCode
 }
 
 function New-BrowserBackup {
     [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([hashtable])]
     param(
-        [Parameter(Mandatory)]
-        [PSCustomObject]$Browser,
+        [Parameter(Mandatory)] [PSCustomObject]$Browser,
         [string]$ProfileName = "Default",
-        [Parameter(Mandatory)]
-        [string]$Destination,
+        [Parameter(Mandatory)] [string]$Destination,
         [string[]]$ExcludeDirs,
         [string]$LogFile,
-        [switch]$Force
+        [switch]$Force,
+        [int]$RobocopyRetries = 3,
+        [int]$RobocopyWait = 2,
+        [string[]]$CriticalFiles
     )
 
-    $profiles = Get-BrowserProfiles -Browser $Browser
-    $profile = $profiles | Where-Object { $_.Name -eq $ProfileName }
+    if (-not $PSCmdlet.ShouldProcess("Backup of $($Browser.Name)")) {
+        return @{ Success = $true; Message = "WhatIf mode - no changes made" }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ProfileName)) { $ProfileName = "Default" }
+
+    $profiles = @(Get-BrowserProfiles -Browser $Browser)
+    $profile = $profiles | Where-Object { $_.Name -eq $ProfileName } | Select-Object -First 1
     if (-not $profile) {
         Write-Log -Message "Profile '$ProfileName' not found for $($Browser.Name)" -Level "ERROR" -LogFile $LogFile
-        return @{ Success = $false; Message = "Profile not found" }
+        return @{ Success = $false; Message = "Profile not found"; Profile = $ProfileName }
     }
 
     $isRunning = Test-BrowserRunning -Browser $Browser
     if ($isRunning -and -not $Force) {
         Write-Log -Message "$($Browser.Name) is running. Close it or use -Force." -Level "WARN" -LogFile $LogFile
-        return @{ Success = $false; Message = "Browser is running" }
+        return @{ Success = $false; Message = "Browser is running"; Running = $true }
     }
-
     if ($isRunning -and $Force) {
         Write-Log -Message "Stopping $($Browser.Name)..." -Level "INFO" -LogFile $LogFile
-        Stop-BrowserGracefully -Browser $Browser -Force
+        [void](Stop-BrowserGracefully -Browser $Browser -Force)
     }
 
-    $safeBrowserName = ($Browser.Name -replace '[^a-zA-Z0-9]', '_')
-    $backupFolder = Join-Path $Destination "${safeBrowserName}_${ProfileName}_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-    if ($PSCmdlet.ShouldProcess($backupFolder, "Create backup directory")) {
-        New-Item -ItemType Directory -Path $backupFolder -Force | Out-Null
-    }
+    $safeName = ($Browser.Name -replace '[^a-zA-Z0-9]', '_').Trim('_')
+    if (-not $safeName) { $safeName = "Browser" }
+    $safeProfile = ($ProfileName -replace '[^a-zA-Z0-9._-]', '_').Trim('_')
+    if (-not $safeProfile) { $safeProfile = "Profile" }
+    $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $backupFolder = Join-Path $Destination "${safeName}_${safeProfile}_${timestamp}"
 
-    $robocopyArgs = @(
-        $profile.FullName,
-        $backupFolder,
-        "/MIR", "/NP", "/R:3", "/W:2",
-        "/LOG:$LogFile"
-    )
-
-    if ($ExcludeDirs) {
-        foreach ($dir in $ExcludeDirs) {
-            $robocopyArgs += "/XD"
-            $robocopyArgs += (Join-Path $profile.FullName $dir)
-        }
+    try {
+        New-Item -ItemType Directory -Path $backupFolder -Force -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Log -Message "Cannot create backup folder '$backupFolder': $_" -Level "ERROR" -LogFile $LogFile
+        return @{ Success = $false; Message = "Cannot create backup folder: $_" }
     }
 
     Write-Log -Message "Starting backup of $($Browser.Name) - $ProfileName" -Level "INFO" -LogFile $LogFile
     Write-Log -Message "Source: $($profile.FullName)" -Level "INFO" -LogFile $LogFile
     Write-Log -Message "Destination: $backupFolder" -Level "INFO" -LogFile $LogFile
 
-    if ($PSCmdlet.ShouldProcess($backupFolder, "Run robocopy")) {
-        $exitCode = 0
-        try {
-            $process = Start-Process -FilePath "robocopy" -ArgumentList $robocopyArgs `
-                -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$backupFolder\robocopy_output.txt"
-            $exitCode = $process.ExitCode
-        } catch {
-            Write-Log -Message "Robocopy failed: $_" -Level "ERROR" -LogFile $LogFile
-            return @{ Success = $false; Message = "Robocopy failed: $_" }
-        }
-
-        switch ($exitCode) {
-            { $_ -le 3 } {
-                Write-Log -Message "Backup completed (exit code: $exitCode)" -Level "INFO" -LogFile $LogFile
-            }
-            { $_ -ge 8 } {
-                Write-Log -Message "Backup failed (exit code: $exitCode)" -Level "ERROR" -LogFile $LogFile
-                return @{ Success = $false; Message = "Backup failed with exit code $exitCode" }
-            }
-            default {
-                Write-Log -Message "Backup completed with warnings (exit code: $exitCode)" -Level "WARN" -LogFile $LogFile
-            }
-        }
-
-        $manifestPath = New-Manifest -BackupPath $backupFolder -Browser $Browser `
-            -ProfileName $ProfileName -RobocopyExitCode $exitCode -LogFile $LogFile
-
-        $result = Get-Item $backupFolder
-        $totalSize = (Get-ChildItem -Path $backupFolder -Recurse -File -ErrorAction SilentlyContinue |
-            Measure-Object -Property Length -Sum).Sum
-
-        Write-Log -Message "Backup complete: $($result.FullName) ($([math]::Round($totalSize / 1MB, 2)) MB)" -Level "INFO" -LogFile $LogFile
-
-        return @{
-            Success    = $true
-            Path       = $backupFolder
-            SizeMB     = [math]::Round($totalSize / 1MB, 2)
-            Manifest   = $manifestPath
-            ExitCode   = $exitCode
-        }
+    $exitCode = 0
+    $redirectFile = Join-Path $backupFolder "robocopy_output.txt"
+    try {
+        $exitCode = Invoke-RobocopyMirror -Source $profile.FullName `
+            -Destination $backupFolder `
+            -ExcludeDirs $ExcludeDirs `
+            -Retries $RobocopyRetries `
+            -Wait $RobocopyWait `
+            -LogFile $LogFile `
+            -RedirectOutput $redirectFile
+    } catch {
+        Write-Log -Message "Robocopy failed: $_" -Level "ERROR" -LogFile $LogFile
+        return @{ Success = $false; Message = "Robocopy failed: $_"; Path = $backupFolder }
     }
 
-    return @{ Success = $true; Message = "WhatIf mode - no changes made" }
+    if ($exitCode -ge 8) {
+        Write-Log -Message "Backup failed (robocopy exit code: $exitCode)" -Level "ERROR" -LogFile $LogFile
+        return @{ Success = $false; Message = "Robocopy exit code $exitCode"; Path = $backupFolder; ExitCode = $exitCode }
+    }
+    elseif ($exitCode -ge 4) {
+        Write-Log -Message "Backup completed with warnings (robocopy exit code: $exitCode)" -Level "WARN" -LogFile $LogFile
+    }
+    else {
+        Write-Log -Message "Backup completed (robocopy exit code: $exitCode)" -Level "INFO" -LogFile $LogFile
+    }
+
+    $manifestPath = New-Manifest -BackupPath $backupFolder `
+        -Browser $Browser `
+        -ProfileName $ProfileName `
+        -RobocopyExitCode $exitCode `
+        -LogFile $LogFile `
+        -CriticalFiles $CriticalFiles
+
+    $totalSize = 0
+    try {
+        $totalSize = (Get-ChildItem -LiteralPath $backupFolder -Recurse -File -Force -ErrorAction SilentlyContinue |
+            Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
+    } catch { }
+    if ($null -eq $totalSize) { $totalSize = 0 }
+
+    Write-Log -Message "Backup complete: $backupFolder ($([math]::Round($totalSize / 1MB, 2)) MB)" -Level "INFO" -LogFile $LogFile
+
+    return @{
+        Success    = $true
+        Path       = $backupFolder
+        SizeMB     = [math]::Round($totalSize / 1MB, 2)
+        Manifest   = $manifestPath
+        ExitCode   = $exitCode
+    }
 }
 
-Export-ModuleMember -Function New-Manifest, Test-BackupIntegrity, New-BrowserBackup
+Export-ModuleMember -Function New-Manifest, Test-BackupIntegrity, Invoke-RobocopyMirror, New-BrowserBackup

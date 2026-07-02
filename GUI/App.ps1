@@ -1,241 +1,327 @@
-$script:ModuleRoot = Split-Path -Parent $PSScriptRoot
+<# 
+.SYNOPSIS
+    Universal Browser Backup GUI - WPF frontend
+.DESCRIPTION
+    Accepts -Config and -LogFile from the CLI host so logging stays in one file.
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)] $Config,
+    [Parameter(Mandatory)] [string]$LogFile
+)
 
-Import-Module "$script:ModuleRoot\Modules\Config.psm1" -Force
-Import-Module "$script:ModuleRoot\Modules\BrowserDetection.psm1" -Force
-Import-Module "$script:ModuleRoot\Modules\Logging.psm1" -Force
-Import-Module "$script:ModuleRoot\Modules\BackupEngine.psm1" -Force
-Import-Module "$script:ModuleRoot\Modules\RestoreEngine.psm1" -Force
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$script:ModuleRoot = Split-Path -Parent $PSScriptRoot
+$script:config = $Config
+$script:logFile = $LogFile
+$script:jobRunning = $false
+$script:cancelRequested = $false
+$script:psInstance = $null
+$script:runspace = $null
+$script:dispatcherTimer = $null
+
+# Load modules in this runspace
+Import-Module (Join-Path $script:ModuleRoot 'Modules\Config.psm1')          -Force -DisableNameChecking
+Import-Module (Join-Path $script:ModuleRoot 'Modules\BrowserDetection.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $script:ModuleRoot 'Modules\Logging.psm1')          -Force -DisableNameChecking
+Import-Module (Join-Path $script:ModuleRoot 'Modules\BackupEngine.psm1')     -Force -DisableNameChecking
+Import-Module (Join-Path $script:ModuleRoot 'Modules\RestoreEngine.psm1')    -Force -DisableNameChecking
 
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
+Add-Type -AssemblyName System.Windows.Forms
 
-$xamlPath = Join-Path $PSScriptRoot "MainWindow.xaml"
-$xaml = Get-Content -Path $xamlPath -Raw
+$xamlPath = Join-Path $PSScriptRoot 'MainWindow.xaml'
+$xaml = Get-Content -LiteralPath $xamlPath -Raw -ErrorAction Stop
+# Strip code-behind artifacts
 $xaml = $xaml -replace 'x:Class="[^"]*"', ''
 $xaml = $xaml -replace 'mc:Ignorable="d"', ''
 
-$reader = [System.Xml.XmlNodeReader]::new($xaml)
+$reader = [System.Xml.XmlNodeReader]::new([xml]$xaml)
 $window = [System.Windows.Markup.XamlReader]::Load($reader)
+if (-not $window) { throw 'Failed to load XAML' }
 
-$script:config = Get-BrowserConfig
-$script:logFile = Initialize-Log
-$script:jobRunning = $false
-$script:cancelRequested = $false
+# Resolve named elements once
+function Find($name) { $window.FindName($name) }
 
-$controls = @{}
-$window.FindName('txtDestination').Text = "$env:USERPROFILE\Desktop"
-$window.FindName('btnAction').Add_Click({ Invoke-SelectedAction })
-$window.FindName('btnCancel').Add_Click({ Request-Cancel })
-$window.FindName('btnBrowse').Add_Click({ Browse-Destination })
-$window.FindName('btnRefresh').Add_Click({ Refresh-BrowserList })
-$window.FindName('chkSelectAll').Add_Click({ Select-All-Browsers })
+$txtDestination = Find 'txtDestination'
+$lstBrowsers    = Find 'lstBrowsers'
+$txtLog         = Find 'txtLog'
+$progressBar    = Find 'progressBar'
+$txtProgress    = Find 'txtProgress'
+$txtStatus      = Find 'txtStatus'
+$btnAction      = Find 'btnAction'
+$btnCancel      = Find 'btnCancel'
+$btnRefresh     = Find 'btnRefresh'
+$btnBrowse      = Find 'btnBrowse'
+$chkSelectAll   = Find 'chkSelectAll'
+$radBackup      = Find 'radBackup'
+$radRestore     = Find 'radRestore'
 
+$txtDestination.Text = [System.Environment]::ExpandEnvironmentVariables($script:config.defaults.backupDestination)
+
+# ---------- UI Helpers ----------
 function Write-GUI {
-    param([string]$Message, [string]$Level = "INFO")
-    $timestamp = Get-Date -Format "HH:mm:ss"
+    param([string]$Message, [ValidateSet('INFO','WARN','ERROR','OK')][string]$Level = 'INFO')
+    $timestamp = Get-Date -Format 'HH:mm:ss'
     $prefix = switch ($Level) {
-        "INFO"  { "[INFO]" }
-        "WARN"  { "[WARN]" }
-        "ERROR" { "[FAIL]" }
-        "OK"    { "[ OK ]" }
+        'INFO'  { '[INFO]' }
+        'WARN'  { '[WARN]' }
+        'ERROR' { '[FAIL]' }
+        'OK'    { '[ OK ]' }
     }
-    $window.FindName('txtLog').Text += "[$timestamp] $prefix $Message`r`n"
-    $window.FindName('txtLog').ScrollToEnd()
+    $txtLog.Dispatcher.Invoke([action]{
+        $txtLog.Text += "[$timestamp] $prefix $Message`r`n"
+        $txtLog.ScrollToEnd()
+    })
 }
-
-function Refresh-BrowserList {
-    $window.FindName('lstBrowsers').Items.Clear()
-    Write-GUI "Detecting installed browsers..."
-
-    $browsers = Get-InstalledBrowsers -Config $script:config
-    foreach ($browser in $browsers) {
-        $profiles = Get-BrowserProfiles -Browser $browser
-        $totalSize = ($profiles | Measure-Object -Property SizeMB -Sum).Sum
-
-        $item = [PSCustomObject]@{
-            Browser      = $browser
-            Name         = $browser.Name
-            ProfileCount = $profiles.Count
-            SizeMB       = [math]::Round($totalSize, 2)
-            Profiles     = $profiles
-        }
-
-        $listBox = $window.FindName('lstBrowsers')
-        $listBox.Items.Add($item) | Out-Null
-    }
-
-    Write-GUI "Found $($browsers.Count) browser(s)" "OK"
-    Update-ModeUI
-}
-
-function Select-All-Browsers {
-    $listBox = $window.FindName('lstBrowsers')
-    $selectAll = $window.FindName('chkSelectAll').IsChecked
-    if ($selectAll) {
-        for ($i = 0; $i -lt $listBox.Items.Count; $i++) {
-            $listBox.SelectedItems.Add($listBox.Items[$i]) | Out-Null
-        }
-    } else {
-        $listBox.SelectedItems.Clear()
-    }
-}
-
-function Browse-Destination {
-    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dialog.Description = "Select backup destination"
-    $dialog.SelectedPath = $window.FindName('txtDestination').Text
-
-    Add-Type -AssemblyName System.Windows.Forms
-    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        $window.FindName('txtDestination').Text = $dialog.SelectedPath
-    }
-}
-
-function Update-ModeUI {
-    $isBackup = $window.FindName('radBackup').IsChecked
-    $actionBtn = $window.FindName('btnAction')
-    $actionBtn.Content = if ($isBackup) { "Start Backup" } else { "Start Restore" }
-}
-
-$window.FindName('radBackup').Add_Click({ Update-ModeUI })
-$window.FindName('radRestore').Add_Click({ Update-ModeUI })
 
 function Set-Progress {
-    param([int]$Percent, [string]$Text = "")
-    $window.FindName('progressBar').Value = $Percent
-    if ($Text) { $window.FindName('txtProgress').Text = $Text }
+    param([int]$Percent, [string]$Text = '')
+    $progressBar.Dispatcher.Invoke([action]{
+        $progressBar.Value = [math]::Max(0, [math]::Min(100, $Percent))
+        if ($Text) { $txtProgress.Text = $Text }
+    })
 }
 
 function Set-Status {
-    param([string]$Text, [string]$Color = "SecondaryColor")
-    $window.FindName('txtStatus').Text = $Text
+    param([string]$Text, [string]$Color = 'SecondaryColor')
+    $txtStatus.Dispatcher.Invoke([action]{
+        $txtStatus.Text = $Text
+        if ($Color) { $txtStatus.Foreground = $window.TryFindResource($Color) }
+    })
 }
 
 function Set-Running {
     param([bool]$Running)
     $script:jobRunning = $Running
-    $window.FindName('btnAction').IsEnabled = -not $Running
-    $window.FindName('btnCancel').Visibility = if ($Running) { "Visible" } else { "Collapsed" }
-    $window.FindName('btnRefresh').IsEnabled = -not $Running
-    $window.FindName('lstBrowsers').IsEnabled = -not $Running
+    $window.Dispatcher.Invoke([action]{
+        $btnAction.IsEnabled = -not $Running
+        $btnCancel.Visibility = if ($Running) { 'Visible' } else { 'Collapsed' }
+        $btnRefresh.IsEnabled = -not $Running
+        $lstBrowsers.IsEnabled = -not $Running
+        $radBackup.IsEnabled = -not $Running
+        $radRestore.IsEnabled = -not $Running
+    })
 }
 
-function Request-Cancel {
-    if ($script:jobRunning) {
-        $script:cancelRequested = $true
-        Write-GUI "Cancellation requested..." "WARN"
+# ---------- Browser List ----------
+function Refresh-BrowserList {
+    $lstBrowsers.Dispatcher.Invoke([action]{ $lstBrowsers.Items.Clear() })
+    Write-GUI 'Detecting installed browsers...'
+
+    try {
+        $browsers = @(Get-InstalledBrowsers -Config $script:config)
+        foreach ($browser in $browsers) {
+            $profiles = @(Get-BrowserProfiles -Browser $browser)
+            $totalSize = ($profiles | Measure-Object -Property SizeMB -Sum -ErrorAction SilentlyContinue).Sum
+            if ($null -eq $totalSize) { $totalSize = 0 }
+
+            $item = [PSCustomObject]@{
+                Browser           = $browser
+                Name              = $browser.Name
+                ProfileCount      = $profiles.Count
+                ProfileCountLabel = "$($profiles.Count) profiles - $([math]::Round($totalSize, 1)) MB"
+                SizeMB            = [math]::Round($totalSize, 2)
+                Profiles          = $profiles
+            }
+            $lstBrowsers.Dispatcher.Invoke([action]{ $lstBrowsers.Items.Add($item) | Out-Null })
+        }
+        Write-GUI "Found $($browsers.Count) browser(s)" 'OK'
+    } catch {
+        Write-GUI "Detection failed: $_" 'ERROR'
+    }
+    Update-ModeUI
+}
+
+function Update-ModeUI {
+    $isBackup = $radBackup.IsChecked
+    $window.Dispatcher.Invoke([action]{
+        $btnAction.Content = if ($isBackup) { 'Start Backup' } else { 'Start Restore' }
+    })
+}
+
+# ---------- Selection Helpers ----------
+function Select-All-Browsers {
+    $selectAll = $chkSelectAll.IsChecked
+    $window.Dispatcher.Invoke([action]{
+        if ($selectAll) {
+            for ($i = 0; $i -lt $lstBrowsers.Items.Count; $i++) {
+                $lstBrowsers.SelectedItems.Add($lstBrowsers.Items[$i]) | Out-Null
+            }
+        } else {
+            $lstBrowsers.SelectedItems.Clear()
+        }
+    })
+}
+
+function Browse-Destination {
+    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dialog.Description = 'Select backup destination'
+    $dialog.SelectedPath = $txtDestination.Text
+    $dialog.ShowNewFolderButton = $true
+
+    $result = $dialog.ShowDialog()
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        $window.Dispatcher.Invoke([action]{ $txtDestination.Text = $dialog.SelectedPath })
     }
 }
 
+# ---------- Action Dispatch ----------
 function Invoke-SelectedAction {
-    $listBox = $window.FindName('lstBrowsers')
-    $selected = @($listBox.SelectedItems)
+    $selected = @()
+    $window.Dispatcher.Invoke([action]{ $selected = @($lstBrowsers.SelectedItems) })
 
     if ($selected.Count -eq 0) {
-        [System.Windows.MessageBox]::Show("Please select at least one browser.", "No Selection", "OK", "Warning")
+        [System.Windows.MessageBox]::Show('Please select at least one browser.', 'No Selection', 'OK', 'Warning')
         return
     }
 
-    $destination = $window.FindName('txtDestination').Text
-    if (-not $destination -or -not (Test-Path $destination)) {
-        [System.Windows.MessageBox]::Show("Please select a valid destination folder.", "Invalid Destination", "OK", "Warning")
+    $destination = $txtDestination.Text
+    if (-not $destination -or -not (Test-Path -LiteralPath $destination)) {
+        [System.Windows.MessageBox]::Show('Please select a valid destination folder.', 'Invalid Destination', 'OK', 'Warning')
         return
     }
 
-    $isBackup = $window.FindName('radBackup').IsChecked
+    $isBackup = $radBackup.IsChecked
     Set-Running $true
     $script:cancelRequested = $false
-    Set-Progress 0 ""
-    Set-Status "Processing..." "PrimaryColor"
+    Set-Progress 0 ''
+    Set-Status 'Processing...' 'PrimaryColor'
 
-    $action = if ($isBackup) { "Backup" } else { "Restore" }
+    $action = if ($isBackup) { 'Backup' } else { 'Restore' }
     Write-GUI "Starting $action of $($selected.Count) browser(s)..."
 
-    $runspace = [runspacefactory]::CreateRunspace()
-    $runspace.Open()
-    $runspace.SessionStateProxy.SetVariable("selected", $selected)
-    $runspace.SessionStateProxy.SetVariable("destination", $destination)
-    $runspace.SessionStateProxy.SetVariable("isBackup", $isBackup)
-    $runspace.SessionStateProxy.SetVariable("config", $script:config)
-    $runspace.SessionStateProxy.SetVariable("cancelRef", [ref]$script:cancelRequested)
+    # Runspace setup
+    $script:runspace = [runspacefactory]::CreateRunspace()
+    $script:runspace.ApartmentState = 'STA'
+    $script:runspace.ThreadOptions = 'ReuseThread'
+    $script:runspace.Open()
 
-    $ps = [powershell]::Create()
-    $ps.Runspace = $runspace
+    # Share variables
+    $script:runspace.SessionStateProxy.SetVariable('selected', $selected)
+    $script:runspace.SessionStateProxy.SetVariable('destination', $destination)
+    $script:runspace.SessionStateProxy.SetVariable('isBackup', $isBackup)
+    $script:runspace.SessionStateProxy.SetVariable('config', $script:config)
+    $script:runspace.SessionStateProxy.SetVariable('logFile', $script:logFile)
+    $script:runspace.SessionStateProxy.SetVariable('cancelRef', [ref]$script:cancelRequested)
+    $script:runspace.SessionStateProxy.SetVariable('ModuleRoot', $script:ModuleRoot)
 
-    [void]$ps.AddScript({
-        $total = $selected.Count
+    $script:psInstance = [powershell]::Create()
+    $script:psInstance.Runspace = $script:runspace
+
+    [void]$script:psInstance.AddScript({
+        # Import modules inside the runspace
+        Import-Module (Join-Path $using:ModuleRoot 'Modules\Config.psm1')          -Force -DisableNameChecking
+        Import-Module (Join-Path $using:ModuleRoot 'Modules\BrowserDetection.psm1') -Force -DisableNameChecking
+        Import-Module (Join-Path $using:ModuleRoot 'Modules\Logging.psm1')          -Force -DisableNameChecking
+        Import-Module (Join-Path $using:ModuleRoot 'Modules\BackupEngine.psm1')     -Force -DisableNameChecking
+        Import-Module (Join-Path $using:ModuleRoot 'Modules\RestoreEngine.psm1')    -Force -DisableNameChecking
+
+        $totalOps = 0
+        foreach ($item in $selected) { $totalOps += $item.Profiles.Count }
         $completed = 0
         $errors = 0
+        $results = @()
 
         foreach ($item in $selected) {
             if ($cancelRef.Value) { break }
-
             $browser = $item.Browser
             $profiles = $item.Profiles
 
             foreach ($profile in $profiles) {
                 if ($cancelRef.Value) { break }
-
                 $completed++
-                $percent = [math]::Round(($completed / ($total * $profiles.Count)) * 100)
 
                 try {
                     if ($isBackup) {
                         $result = New-BrowserBackup -Browser $browser -ProfileName $profile.Name `
                             -Destination $destination -ExcludeDirs $config.defaults.excludeFromBackup `
-                            -Force -ErrorAction Stop
-
+                            -Force -LogFile $logFile `
+                            -RobocopyRetries $config.defaults.robocopyRetries `
+                            -RobocopyWait $config.defaults.robocopyWait `
+                            -CriticalFiles $config.defaults.checksumCriticalFiles
                         if (-not $result.Success) { $errors++ }
+                        $results += $result
                     } else {
-                        # Restore logic would go here
-                        Write-Host "Restore not yet implemented"
+                        # Restore: need a backup source folder from user — not implemented in multi-select yet.
+                        # For now, skip with warning.
+                        Write-Log -Message "Restore not yet supported in multi-select GUI mode" -Level 'WARN' -LogFile $logFile
+                        $errors++
                     }
                 } catch {
                     $errors++
-                    Write-Host "ERROR: $_"
+                    Write-Log -Message "Operation error: $_" -Level 'ERROR' -LogFile $logFile
                 }
             }
         }
 
-        return @{ Completed = $completed; Errors = $errors; Total = $total }
+        return @{ Completed = $completed; Errors = $errors; Total = $totalOps; Results = $results }
     })
 
-    $handle = $ps.BeginInvoke()
+    $handle = $script:psInstance.BeginInvoke()
 
-    $timer = New-Object System.Windows.Threading.DispatcherTimer
-    $timer.Interval = [TimeSpan]::FromMilliseconds(250)
-    $timer.Add_Tick({
+    # UI polling timer
+    $script:dispatcherTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:dispatcherTimer.Interval = [TimeSpan]::FromMilliseconds(250)
+    $script:dispatcherTimer.Add_Tick({
         if ($handle.IsCompleted) {
-            $timer.Stop()
-            $result = $ps.EndInvoke($handle)
-            $ps.Dispose()
-            $runspace.Close()
+            $script:dispatcherTimer.Stop()
+            try {
+                $result = $script:psInstance.EndInvoke($handle)
+            } catch {
+                $result = @{ Errors = 1; Completed = 0; Total = 0 }
+                Write-GUI "Background job failed: $_" 'ERROR'
+            } finally {
+                if ($script:psInstance) { $script:psInstance.Dispose(); $script:psInstance = $null }
+                if ($script:runspace) { $script:runspace.Close(); $script:runspace = $null }
+            }
 
             Set-Running $false
-            Set-Progress 100 "Complete"
+            Set-Progress 100 'Complete'
 
             if ($script:cancelRequested) {
-                Set-Status "Cancelled" "WarningColor"
-                Write-GUI "Operation cancelled by user" "WARN"
+                Set-Status 'Cancelled' 'WarningColor'
+                Write-GUI 'Operation cancelled by user' 'WARN'
             } elseif ($result.Errors -gt 0) {
-                Set-Status "Completed with $($result.Errors) error(s)" "WarningColor"
-                Write-GUI "Completed with $($result.Errors) error(s)" "WARN"
+                Set-Status "Completed with $($result.Errors) error(s)" 'WarningColor'
+                Write-GUI "Completed with $($result.Errors) error(s)" 'WARN'
             } else {
-                Set-Status "All operations completed successfully" "SecondaryColor"
-                Write-GUI "All $($result.Completed) operation(s) completed successfully" "OK"
+                Set-Status "All operations completed successfully" 'SecondaryColor'
+                Write-GUI "All $($result.Completed) operation(s) completed successfully" 'OK'
             }
         } else {
-            $window.FindName('txtProgress').Text = "Working..."
+            $window.Dispatcher.Invoke([action]{ $txtProgress.Text = 'Working...' })
         }
     })
-    $timer.Start()
+    $script:dispatcherTimer.Start()
 }
 
-function Request-Cancel {
-    $script:cancelRequested = $true
-    Write-GUI "Cancelling..." "WARN"
-}
+# ---------- Event Handlers ----------
+$btnAction.Add_Click({ Invoke-SelectedAction })
+$btnCancel.Add_Click({ 
+    if ($script:jobRunning) { 
+        $script:cancelRequested = $true
+        Write-GUI 'Cancelling...' 'WARN'
+    }
+})
+$btnRefresh.Add_Click({ Refresh-BrowserList })
+$btnBrowse.Add_Click({ Browse-Destination })
+$chkSelectAll.Add_Click({ Select-All-Browsers })
+$radBackup.Add_Click({ Update-ModeUI })
+$radRestore.Add_Click({ Update-ModeUI })
 
+# Initial load
 Refresh-BrowserList
+
+# Cleanup on window close
+$window.Add_Closed({
+    if ($script:dispatcherTimer) { $script:dispatcherTimer.Stop() }
+    if ($script:psInstance) { try { $script:psInstance.Dispose() } catch { } }
+    if ($script:runspace) { try { $script:runspace.Close() } catch { } }
+})
+
 $window.ShowDialog() | Out-Null

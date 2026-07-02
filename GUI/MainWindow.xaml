@@ -1,26 +1,25 @@
 <Window x:Class="UniversalBrowserBackup.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Universal Browser Backup v2.0"
+        Title="Universal Browser Backup v2.1"
         Height="620" Width="820"
         WindowStartupLocation="CenterScreen"
-        Background="#1E1E2E"
-        Foreground="#CDD6F4"
+        Background="#FF1E1E2E"
+        Foreground="#FFCDD6F4"
         FontFamily="Segoe UI"
         ResizeMode="CanMinimize">
 
     <Window.Resources>
-        <!-- Dark Theme Colors -->
-        <SolidColorBrush x:Key="BaseColor" Color="#1E1E2E"/>
-        <SolidColorBrush x:Key="SurfaceColor" Color="#313244"/>
-        <SolidColorBrush x:Key="OverlayColor" Color="#45475A"/>
-        <SolidColorBrush x:Key="PrimaryColor" Color="#89B4FA"/>
-        <SolidColorBrush x:Key="SecondaryColor" Color="#A6E3A1"/>
-        <SolidColorBrush x:Key="WarningColor" Color="#F9E2AF"/>
-        <SolidColorBrush x:Key="ErrorColor" Color="#F38BA8"/>
-        <SolidColorBrush x:Key="TextPrimary" Color="#CDD6F4"/>
-        <SolidColorBrush x:Key="TextSecondary" Color="#BAC2DE"/>
-        <SolidColorBrush x:Key="TextDim" Color="#6C7086"/>
+        <SolidColorBrush x:Key="BaseColor" Color="#FF1E1E2E"/>
+        <SolidColorBrush x:Key="SurfaceColor" Color="#FF313244"/>
+        <SolidColorBrush x:Key="OverlayColor" Color="#FF45475A"/>
+        <SolidColorBrush x:Key="PrimaryColor" Color="#FF89B4FA"/>
+        <SolidColorBrush x:Key="SecondaryColor" Color="#FFA6E3A1"/>
+        <SolidColorBrush x:Key="WarningColor" Color="#FFF9E2AF"/>
+        <SolidColorBrush x:Key="ErrorColor" Color="#FFF38BA8"/>
+        <SolidColorBrush x:Key="TextPrimary" Color="#FFCDD6F4"/>
+        <SolidColorBrush x:Key="TextSecondary" Color="#FFBAC2DE"/>
+        <SolidColorBrush x:Key="TextDim" Color="#FF6C7086"/>
     </Window.Resources>
 
     <Grid Margin="16">
@@ -31,23 +30,20 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Header -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
-            <TextBlock Text="🌐" FontSize="28" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <TextBlock Text="UB" FontSize="28" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="{StaticResource PrimaryColor}"/>
             <StackPanel VerticalAlignment="Center">
                 <TextBlock Text="Universal Browser Backup" FontSize="22" FontWeight="Bold" Foreground="{StaticResource TextPrimary}"/>
-                <TextBlock Text="Auto-detect • Multi-profile • Integrity verified" FontSize="12" Foreground="{StaticResource TextDim}"/>
+                <TextBlock Text="Auto-detect | Multi-profile | Integrity verified" FontSize="12" Foreground="{StaticResource TextDim}"/>
             </StackPanel>
         </StackPanel>
 
-        <!-- Main Content -->
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="260"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- Left Panel: Browser List -->
             <Border Grid.Column="0" Background="{StaticResource SurfaceColor}" CornerRadius="8" Padding="12" Margin="0,0,12,0">
                 <Grid>
                     <Grid.RowDefinitions>
@@ -62,7 +58,7 @@
 
                     <CheckBox x:Name="chkSelectAll" Grid.Row="1" Content="Select All"
                               Foreground="{StaticResource TextPrimary}" Margin="0,0,0,8"
-                              IsChecked="True" Click="chkSelectAll_Click"/>
+                              IsChecked="True"/>
 
                     <ListBox x:Name="lstBrowsers" Grid.Row="2"
                              Background="Transparent" BorderThickness="0"
@@ -72,24 +68,19 @@
                             <DataTemplate>
                                 <StackPanel Margin="2">
                                     <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"/>
-                                    <TextBlock Foreground="{StaticResource TextDim}" FontSize="11">
-                                        <Run Text="{Binding ProfileCount, StringFormat='{0} profiles'}"/>
-                                        <Run Text=" • "/>
-                                        <Run Text="{Binding SizeMB, StringFormat='{}{0} MB'}"/>
-                                    </TextBlock>
+                                    <TextBlock Text="{Binding ProfileCountLabel}" Foreground="{StaticResource TextDim}" FontSize="11"/>
                                 </StackPanel>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>
 
-                    <Button x:Name="btnRefresh" Grid.Row="3" Content="⟳ Refresh List"
+                    <Button x:Name="btnRefresh" Grid.Row="3" Content="Refresh List"
                             Background="{StaticResource OverlayColor}" Foreground="{StaticResource TextPrimary}"
-                            Height="32" Margin="0,8,0,0" Click="btnRefresh_Click"
+                            Height="32" Margin="0,8,0,0"
                             BorderThickness="0" Cursor="Hand"/>
                 </Grid>
             </Border>
 
-            <!-- Right Panel: Main Action Area -->
             <Grid Grid.Column="1">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -97,16 +88,14 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <!-- Mode Tabs -->
                 <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
-                    <RadioButton x:Name="radBackup" Content="📦 Backup" GroupName="Mode"
+                    <RadioButton x:Name="radBackup" Content="Backup" GroupName="Mode"
                                  Foreground="{StaticResource TextPrimary}" FontSize="14" FontWeight="SemiBold"
                                  IsChecked="True" Margin="0,0,20,0"/>
-                    <RadioButton x:Name="radRestore" Content="📥 Restore" GroupName="Mode"
+                    <RadioButton x:Name="radRestore" Content="Restore" GroupName="Mode"
                                  Foreground="{StaticResource TextPrimary}" FontSize="14" FontWeight="SemiBold"/>
                 </StackPanel>
 
-                <!-- Status Panel -->
                 <Border Grid.Row="1" Background="{StaticResource SurfaceColor}" CornerRadius="8" Padding="16">
                     <Grid>
                         <Grid.RowDefinitions>
@@ -115,7 +104,6 @@
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
-                        <!-- Destination -->
                         <StackPanel Grid.Row="0" Margin="0,0,0,12">
                             <TextBlock Text="Destination" Foreground="{StaticResource TextDim}" FontSize="11" Margin="0,0,0,4"/>
                             <Grid>
@@ -130,22 +118,20 @@
                                 <Button x:Name="btnBrowse" Grid.Column="1" Content="Browse..."
                                         Background="{StaticResource PrimaryColor}" Foreground="{StaticResource BaseColor}"
                                         FontWeight="SemiBold" Height="32" Margin="8,0,0,0" Padding="16,0"
-                                        Click="btnBrowse_Click" BorderThickness="0" Cursor="Hand"/>
+                                        BorderThickness="0" Cursor="Hand"/>
                             </Grid>
                         </StackPanel>
 
-                        <!-- Log Output -->
                         <TextBlock Grid.Row="1" Text="Activity Log" Foreground="{StaticResource TextDim}"
                                    FontSize="11" Margin="0,0,0,4"/>
                         <TextBox x:Name="txtLog" Grid.Row="2"
                                  Background="{StaticResource BaseColor}" Foreground="{StaticResource TextSecondary}"
-                                 BorderThickness="0" Padding="8" FontFamily="Cascadia Mono,Consolas"
+                                 BorderThickness="0" Padding="8"
                                  FontSize="11" IsReadOnly="True" TextWrapping="Wrap"
                                  VerticalScrollBarVisibility="Auto"/>
                     </Grid>
                 </Border>
 
-                <!-- Progress & Actions -->
                 <Grid Grid.Row="2" Margin="0,12,0,0">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -176,19 +162,18 @@
                                 Background="Transparent" Foreground="{StaticResource ErrorColor}"
                                 BorderBrush="{StaticResource ErrorColor}" BorderThickness="1"
                                 Height="36" Padding="20,0" Margin="0,0,10,0"
-                                Click="btnCancel_Click" Visibility="Collapsed" Cursor="Hand"/>
+                                Visibility="Collapsed" Cursor="Hand"/>
 
                         <Button x:Name="btnAction" Grid.Column="2" Content="Start Backup"
                                 Background="{StaticResource PrimaryColor}" Foreground="{StaticResource BaseColor}"
                                 FontWeight="SemiBold" FontSize="14" Height="36" Padding="24,0"
-                                Click="btnAction_Click" BorderThickness="0" Cursor="Hand"/>
+                                BorderThickness="0" Cursor="Hand"/>
                     </Grid>
                 </Grid>
             </Grid>
         </Grid>
 
-        <!-- Footer -->
-        <TextBlock Grid.Row="3" Text="v2.0 • MIT License • github.com/universal-browser-backup"
+        <TextBlock Grid.Row="3" Text="v2.1 - MIT License"
                    Foreground="{StaticResource TextDim}" FontSize="10"
                    HorizontalAlignment="Center" Margin="0,12,0,0"/>
     </Grid>

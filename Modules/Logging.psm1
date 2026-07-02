@@ -1,30 +1,63 @@
+# Logging.psm1 — thread-safe-ish structured logging with rotation.
+
+Set-StrictMode -Version Latest
+
+function Get-LogDirectory {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [string]$LogDirectory
+    )
+    if (-not $LogDirectory) {
+        $LogDirectory = Join-Path $env:APPDATA "UniversalBrowserBackup\logs"
+    }
+    return $LogDirectory
+}
+
 function Initialize-Log {
     [CmdletBinding()]
+    [OutputType([string])]
     param(
         [string]$LogDirectory,
         [int]$MaxLogFiles = 30
     )
 
-    if (-not $LogDirectory) {
-        $LogDirectory = Join-Path $env:APPDATA "UniversalBrowserBackup\logs"
-    }
+    $LogDirectory = Get-LogDirectory -LogDirectory $LogDirectory
 
-    if (-not (Test-Path $LogDirectory)) {
-        New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $LogDirectory)) {
+        try {
+            New-Item -ItemType Directory -Path $LogDirectory -Force -ErrorAction Stop | Out-Null
+        } catch {
+            Write-Warning "Cannot create log directory '$LogDirectory': $_"
+            return $null
+        }
     }
 
     $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $logFile = Join-Path $LogDirectory "backup_$timestamp.log"
 
-    if (-not (Test-Path $logFile)) {
-        New-Item -ItemType File -Path $logFile -Force | Out-Null
+    try {
+        if (-not (Test-Path -LiteralPath $logFile)) {
+            New-Item -ItemType File -Path $logFile -Force -ErrorAction Stop | Out-Null
+        } else {
+            # Touch file so writers don't get a race on first access.
+            (Get-Item -LiteralPath $logFile).LastWriteTime = Get-Date
+        }
+    } catch {
+        Write-Warning "Cannot create log file '$logFile': $_"
+        return $null
     }
 
-    $existingLogs = Get-ChildItem -Path $LogDirectory -Filter "backup_*.log" -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending
-    if ($existingLogs.Count -gt $MaxLogFiles) {
-        $existingLogs | Select-Object -Skip $MaxLogFiles | Remove-Item -Force -ErrorAction SilentlyContinue
-    }
+    # Rotate: delete oldest files when count exceeds MaxLogFiles.
+    try {
+        $existingLogs = @(Get-ChildItem -LiteralPath $LogDirectory -Filter "backup_*.log" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending)
+        if ($existingLogs.Count -gt $MaxLogFiles) {
+            $existingLogs | Select-Object -Skip $MaxLogFiles | ForEach-Object {
+                try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch { }
+            }
+        }
+    } catch { }
 
     return $logFile
 }
@@ -32,35 +65,45 @@ function Initialize-Log {
 function Write-Log {
     [CmdletBinding()]
     param(
-        [string]$Message,
-        [ValidateSet("INFO", "WARN", "ERROR")]
-        [string]$Level = "INFO",
-        [string]$LogFile
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$Message,
+        [ValidateSet("INFO", "WARN", "ERROR")] [string]$Level = "INFO",
+        [string]$LogFile,
+        [switch]$NoConsole
     )
 
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $logEntry = "[$timestamp] [$Level] $Message"
 
-    if ($LogFile -and (Test-Path (Split-Path $LogFile -Parent))) {
-        Add-Content -Path $LogFile -Value $logEntry -ErrorAction SilentlyContinue
+    if ($LogFile -and (Test-Path -LiteralPath (Split-Path -Parent $LogFile) -PathType Container)) {
+        try {
+            Add-Content -LiteralPath $LogFile -Value $logEntry -Encoding UTF8 -ErrorAction Stop
+        } catch {
+            # Silent fallback: never let logging kill the caller.
+            if (-not $NoConsole) { Write-Warning "Log write failed: $_" }
+        }
     }
 
-    switch ($Level) {
-        "INFO"  { Write-Host $logEntry -ForegroundColor Cyan }
-        "WARN"  { Write-Host $logEntry -ForegroundColor Yellow }
-        "ERROR" { Write-Host $logEntry -ForegroundColor Red }
+    if (-not $NoConsole) {
+        $color = switch ($Level) {
+            "INFO"  { "Cyan" }
+            "WARN"  { "Yellow" }
+            "ERROR" { "Red" }
+            default { "Gray" }
+        }
+        try { Write-Host $logEntry -ForegroundColor $color } catch { }
     }
 }
 
 function Get-LogPath {
     [CmdletBinding()]
+    [OutputType([string])]
     param()
-
-    $logDir = Join-Path $env:APPDATA "UniversalBrowserBackup\logs"
-    $latest = Get-ChildItem -Path $logDir -Filter "backup_*.log" -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
-    return $latest.FullName
+    $logDir = Get-LogDirectory
+    if (-not (Test-Path -LiteralPath $logDir)) { return $null }
+    $latest = Get-ChildItem -LiteralPath $logDir -Filter "backup_*.log" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($latest) { return $latest.FullName }
+    return $null
 }
 
-Export-ModuleMember -Function Initialize-Log, Write-Log, Get-LogPath
+Export-ModuleMember -Function Initialize-Log, Write-Log, Get-LogPath, Get-LogDirectory

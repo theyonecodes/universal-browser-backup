@@ -13,3 +13,15 @@ Desktop.ini
 # PowerShell
 *.pssc
 *.psrc
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.tox/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
