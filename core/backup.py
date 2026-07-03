@@ -4,12 +4,26 @@ import subprocess
 import hashlib
 import json
 import shutil
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from core.config_manager import config
 from core.logger import get_logger
 
 log = get_logger()
+
+# The files that preserve your login state, bookmarks, history, and settings.
+# These are what matter most — if they survive, you never have to re-login.
+CRITICAL_FILES = [
+    "Login Data",          # Saved passwords
+    "Cookies",             # Session cookies (stay logged in)
+    "Preferences",         # Browser settings
+    "Secure Preferences",  # Signed browser settings
+    "Bookmarks",           # Your bookmarks
+    "Bookmarks.bak",       # Bookmark backup
+    "History",             # Browsing history
+    "Web Data",            # Autofill addresses, payments
+]
 
 
 class BackupEngine:
@@ -31,6 +45,128 @@ class BackupEngine:
         return hashlib.sha256(data).hexdigest()[:16]
 
     @staticmethod
+    def get_critical_files_status(profile_path):
+        """Check which critical files exist in a profile BEFORE backup.
+
+        Returns a list of dicts like:
+        [{"name": "Login Data", "exists": True, "size_kb": 12.3},
+         {"name": "Cookies", "exists": True, "size_kb": 456.7},
+         {"name": "Web Data", "exists": False, "size_kb": 0}]
+        """
+        profile = Path(profile_path)
+        status = []
+        for fname in CRITICAL_FILES:
+            f_path = profile / fname
+            if f_path.exists():
+                size = f_path.stat().st_size
+                status.append({
+                    "name": fname,
+                    "exists": True,
+                    "size_kb": round(size / 1024, 1),
+                })
+            else:
+                status.append({
+                    "name": fname,
+                    "exists": False,
+                    "size_kb": 0,
+                })
+        return status
+
+    @staticmethod
+    def estimate_backup_size(profile_path, exclude_dirs=None):
+        """Scan a profile directory and return size breakdown before backup.
+
+        Returns:
+        {
+            "total_size_mb": 123.4,
+            "file_count": 1567,
+            "critical_files": [{"name": "Login Data", "exists": True, "size_kb": 12.3}, ...],
+            "critical_size_mb": 2.1,
+            "by_extension": {".json": {"count": 45, "size_mb": 1.2}, ".sql": {"count": 3, "size_mb": 89.0}, ...},
+            "excluded_size_mb": 12.3,
+        }
+        """
+        profile = Path(profile_path)
+        if not profile.exists():
+            return {"error": f"Profile path does not exist: {profile_path}"}
+
+        # Get default exclusions from config
+        default_exclusions = set(config.get("defaults", {}).get("excludeFromBackup", []))
+        if exclude_dirs:
+            default_exclusions.update(exclude_dirs)
+
+        total_size = 0
+        excluded_size = 0
+        file_count = 0
+        ext_stats = {}  # ext -> {"count": N, "size": bytes}
+
+        for entry in os.scandir(profile):
+            if entry.is_file(follow_symlinks=False):
+                try:
+                    size = entry.stat().st_size
+                except OSError:
+                    continue
+                total_size += size
+                file_count += 1
+                ext = Path(entry.name).suffix.lower() or "(no ext)"
+                if ext not in ext_stats:
+                    ext_stats[ext] = {"count": 0, "size": 0}
+                ext_stats[ext]["count"] += 1
+                ext_stats[ext]["size"] += size
+            elif entry.is_dir(follow_symlinks=False):
+                dir_name = entry.name
+                try:
+                    for root, dirs, files in os.walk(entry.path):
+                        for f in files:
+                            fpath = os.path.join(root, f)
+                            try:
+                                size = os.path.getsize(fpath)
+                            except OSError:
+                                continue
+                            rel_dir = os.path.relpath(root, profile)
+                            if rel_dir == ".":
+                                rel_dir = ""
+                            # Check if this dir is excluded
+                            is_excluded = False
+                            for excl in default_exclusions:
+                                if rel_dir == excl or rel_dir.startswith(excl + os.sep):
+                                    is_excluded = True
+                                    break
+                            if is_excluded:
+                                excluded_size += size
+                            else:
+                                total_size += size
+                                file_count += 1
+                                ext = Path(f).suffix.lower() or "(no ext)"
+                                if ext not in ext_stats:
+                                    ext_stats[ext] = {"count": 0, "size": 0}
+                                ext_stats[ext]["count"] += 1
+                                ext_stats[ext]["size"] += size
+                except OSError:
+                    pass
+
+        # Convert to sorted list of (ext, count, size_mb)
+        by_extension = {}
+        for ext, data in sorted(ext_stats.items(), key=lambda x: -x[1]["size"]):
+            by_extension[ext] = {
+                "count": data["count"],
+                "size_mb": round(data["size"] / (1024 * 1024), 2),
+            }
+
+        # Critical files status
+        critical = BackupEngine.get_critical_files_status(profile_path)
+        critical_size = sum(c["size_kb"] for c in critical if c["exists"])
+
+        return {
+            "total_size_mb": round(total_size / (1024 * 1024), 2),
+            "file_count": file_count,
+            "critical_files": critical,
+            "critical_size_mb": round(critical_size / 1024, 2),
+            "by_extension": by_extension,
+            "excluded_size_mb": round(excluded_size / (1024 * 1024), 2),
+        }
+
+    @staticmethod
     def create_manifest(backup_path, browser, profile_name, robocopy_exit_code, log_file):
         manifest_path = Path(backup_path) / "manifest.json"
 
@@ -40,10 +176,22 @@ class BackupEngine:
         ]
 
         checksums = {}
+        critical_status = {}
         for file in critical_files:
             f_path = Path(backup_path) / file
             if f_path.exists():
                 checksums[file] = BackupEngine.generate_checksum(str(f_path))
+                critical_status[file] = {
+                    "backedUp": True,
+                    "sizeBytes": f_path.stat().st_size,
+                    "sizeKB": round(f_path.stat().st_size / 1024, 1),
+                }
+            else:
+                critical_status[file] = {
+                    "backedUp": False,
+                    "sizeBytes": 0,
+                    "sizeKB": 0,
+                }
 
         # Stats: only count files, not directories
         files = [f for f in Path(backup_path).rglob("*") if f.is_file()]
@@ -101,6 +249,7 @@ class BackupEngine:
                 "logFile": log_file
             },
             "checksums": checksums,
+            "criticalFiles": critical_status,
             "machine": {
                 "name": os.environ.get("COMPUTERNAME", "Unknown"),
                 "user": os.environ.get("USERNAME", "Unknown"),
@@ -156,10 +305,14 @@ class BackupEngine:
             "/MT:4"
         ]
 
-        if exclude_dirs:
-            for d in exclude_dirs:
-                if d:
-                    robocopy_args.extend(["/XD", os.path.join(profile["full_path"], d)])
+        # Merge caller exclusions with config defaults
+        effective_excludes = set(exclude_dirs or [])
+        default_excludes = config.get("defaults", {}).get("excludeFromBackup", [])
+        if default_excludes:
+            effective_excludes.update(default_excludes)
+        for d in effective_excludes:
+            if d:
+                robocopy_args.extend(["/XD", os.path.join(profile["full_path"], d)])
 
         if log_file:
             robocopy_args.extend(["/LOG+:", log_file])

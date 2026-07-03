@@ -70,14 +70,22 @@ function Get-ChromiumBrowsers {
 
         $userDataPath = $null
         $profileRoot = if ($browserDef.profileRoot) { $browserDef.profileRoot } else { "Default" }
-        $variants = @($profileRoot, "Default", "User Data", "User Data V2", "$profileRoot V2")
-        $variants = $variants | Select-Object -Unique
 
-        foreach ($variant in $variants) {
-            $candidate = Join-Path $basePath $variant
-            if (Test-Path -LiteralPath $candidate -PathType Container) {
-                $userDataPath = $candidate
-                break
+        # Check basePath itself first — most Chromium browsers' localPath
+        # already ends in "User Data", so basePath IS the data folder.
+        $localStateInBase = Join-Path $basePath "Local State"
+        if (Test-Path -LiteralPath $localStateInBase -PathType Leaf) {
+            $userDataPath = $basePath
+        } else {
+            $variants = @($profileRoot, "Default", "User Data", "User Data V2", "$profileRoot V2")
+            $variants = $variants | Select-Object -Unique
+
+            foreach ($variant in $variants) {
+                $candidate = Join-Path $basePath $variant
+                if (Test-Path -LiteralPath $candidate -PathType Container) {
+                    $userDataPath = $candidate
+                    break
+                }
             }
         }
 
@@ -136,6 +144,7 @@ function Get-GeckoBrowsers {
 
     $result = [System.Collections.Generic.List[PSCustomObject]]::new()
     $appData = $env:APPDATA
+    $localAppData = $env:LOCALAPPDATA
     if ([string]::IsNullOrWhiteSpace($appData)) { return $result.ToArray() }
 
     $browserDefs = $Config.browsers | Where-Object { $_.type -eq "Gecko" }
@@ -144,22 +153,37 @@ function Get-GeckoBrowsers {
         $localPath = $browserDef.localPath
         if (-not $localPath) { continue }
 
-        $firefoxPath = Join-Path $appData $localPath
-        $profilesIni = Join-Path $firefoxPath "profiles.ini"
-        if (-not (Test-Path -LiteralPath $profilesIni -PathType Leaf)) { continue }
+        $detectStrategy = if ($browserDef.detectStrategy) { $browserDef.detectStrategy } else { "profilesIni" }
+        $firefoxPath = $null
 
-        try {
-            $iniContent = Get-Content -LiteralPath $profilesIni -Raw -ErrorAction Stop
-        } catch {
-            Write-Verbose "Could not read profiles.ini: $_"
-            continue
-        }
+        if ($detectStrategy -eq "localProfilesDir") {
+            # Zen-style: profiles live in LOCALAPPDATA\{localPath}\Profiles\
+            $localRoot = Join-Path $localAppData $localPath
+            $profilesDir = Join-Path $localRoot "Profiles"
+            if (Test-Path -LiteralPath $profilesDir -PathType Container) {
+                $firefoxPath = $localRoot
+            } else {
+                continue
+            }
+        } else {
+            # Standard Firefox-style: profiles.ini in APPDATA
+            $firefoxPath = Join-Path $appData $localPath
+            $profilesIni = Join-Path $firefoxPath "profiles.ini"
+            if (-not (Test-Path -LiteralPath $profilesIni -PathType Leaf)) { continue }
 
-        $hasProfile = $false
-        foreach ($line in ($iniContent -split "`r?`n")) {
-            if ($line -match '^Path=') { $hasProfile = $true; break }
+            try {
+                $iniContent = Get-Content -LiteralPath $profilesIni -Raw -ErrorAction Stop
+            } catch {
+                Write-Verbose "Could not read profiles.ini: $_"
+                continue
+            }
+
+            $hasProfile = $false
+            foreach ($line in ($iniContent -split "`r?`n")) {
+                if ($line -match '^Path=') { $hasProfile = $true; break }
+            }
+            if (-not $hasProfile) { continue }
         }
-        if (-not $hasProfile) { continue }
 
         $searchRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
         $relativePath = $browserDef.programFilesPath
@@ -194,7 +218,7 @@ function Get-GeckoBrowsers {
             Version        = $version
             RawName        = $safeName
             Icon           = if ($browserDef.icon) { $browserDef.icon } else { $safeName.ToLowerInvariant() }
-            DetectStrategy = if ($browserDef.detectStrategy) { $browserDef.detectStrategy } else { "profilesIni" }
+            DetectStrategy = $detectStrategy
         })
     }
 
@@ -243,109 +267,289 @@ function Get-BrowserProfiles {
     $btype = $Browser.Type
     $detectStrategy = $Browser.DetectStrategy
 
+    # Files that preserve your login state, bookmarks, history
+    $criticalFileNames = @("Login Data", "Cookies", "Preferences", "Secure Preferences",
+                           "Bookmarks", "Bookmarks.bak", "History", "Web Data")
+
+    # Default exclusions from config
+    $defaultExcludes = @("Cache", "Code Cache", "Service Worker", "cache2",
+                         "startupCache", "GPUCache", "Thumbnails", "blob_storage",
+                         "Network", "Session Storage", "File System", "Storage",
+                         "ShaderCache", "GrShaderCache", "GraphiteDawnCache",
+                         "DawnWebGPUCache", "Local Storage", "IndexedDB", "Visited Links")
+
     if ($btype -eq "Chromium" -or $detectStrategy -eq "localState") {
         $userDataPath = $Browser.ProfilePath
         if (Test-Path -LiteralPath $userDataPath -PathType Container) {
-            $dirs = @()
-            try {
-                $dirs = Get-ChildItem -LiteralPath $userDataPath -Directory -ErrorAction SilentlyContinue |
-                    Where-Object {
-                        $_.Name -eq 'Default' -or
-                        $_.Name -match '^Profile \d+$' -or
-                        $_.Name -match '-release$' -or
-                        $_.Name -match '-beta$'
+            # Read profile metadata from Local State info_cache
+            $infoCache = @{}
+            $localStatePath = Join-Path $userDataPath "Local State"
+            if (Test-Path -LiteralPath $localStatePath -PathType Leaf) {
+                try {
+                    $lsData = Get-Content -LiteralPath $localStatePath -Raw | ConvertFrom-Json
+                    if ($lsData.profile.info_cache) {
+                        $lsData.profile.info_cache.PSObject.Properties | ForEach-Object {
+                            $infoCache[$_.Name] = $_.Value
+                        }
                     }
-            } catch { }
+                } catch { }
+            }
 
-            foreach ($dir in $dirs) {
+            # TRUTH SOURCE: iterate info_cache keys when available
+            $profileDirs = @{}
+            if ($infoCache.Count -gt 0) {
+                foreach ($key in $infoCache.Keys) {
+                    $candidate = Join-Path $userDataPath $key
+                    if (Test-Path -LiteralPath $candidate -PathType Container) {
+                        $profileDirs[$key] = $candidate
+                    }
+                }
+            } else {
+                # Fallback: scan directories if info_cache unavailable
+                try {
+                    Get-ChildItem -LiteralPath $userDataPath -Directory -ErrorAction SilentlyContinue |
+                        Where-Object {
+                            $_.Name -eq 'Default' -or
+                            $_.Name -match '^Profile \d+$' -or
+                            $_.Name -match '-release$' -or
+                            $_.Name -match '-beta$'
+                        } | ForEach-Object {
+                            $profileDirs[$_.Name] = $_.FullName
+                        }
+                } catch { }
+            }
+
+            foreach ($key in $profileDirs.Keys) {
+                $dirPath = $profileDirs[$key]
                 $size = 0
                 try {
-                    $size = (Get-ChildItem -LiteralPath $dir.FullName -Recurse -File -Force -ErrorAction SilentlyContinue |
+                    $size = (Get-ChildItem -LiteralPath $dirPath -Recurse -File -Force -ErrorAction SilentlyContinue |
                         Measure-Object -Property Length -Sum).Sum
                 } catch { }
                 if ($null -eq $size) { $size = 0 }
+
+                # Get metadata from info_cache
+                $displayName = ""
+                $email = ""
+                if ($infoCache.ContainsKey($key)) {
+                    $cacheEntry = $infoCache[$key]
+                    $displayName = if ($cacheEntry.name) { $cacheEntry.name } else { "" }
+                    $email = if ($cacheEntry.gaia_name) { $cacheEntry.gaia_name }
+                             elseif ($cacheEntry.user_name) { $cacheEntry.user_name }
+                             elseif ($cacheEntry.gaia_email) { $cacheEntry.gaia_email }
+                             elseif ($cacheEntry.signed_in_email) { $cacheEntry.signed_in_email }
+                             else { "" }
+                }
+
+                # Count critical files
+                $criticalBacked = 0
+                $criticalTotal = $criticalFileNames.Count
+                $criticalDetails = @()
+                foreach ($cf in $criticalFileNames) {
+                    $cfPath = Join-Path $dirPath $cf
+                    $exists = Test-Path -LiteralPath $cfPath -PathType Leaf
+                    if ($exists) { $criticalBacked++ }
+                    $cfSize = 0
+                    if ($exists) {
+                        try { $cfSize = (Get-Item -LiteralPath $cfPath).Length } catch { }
+                    }
+                    $criticalDetails += [PSCustomObject]@{
+                        Name = $cf
+                        Exists = $exists
+                        SizeKB = [math]::Round($cfSize / 1KB, 1)
+                    }
+                }
+
+                # Estimate size after exclusions
+                $excludedSize = 0
+                try {
+                    $excludedSize = (Get-ChildItem -LiteralPath $dirPath -Recurse -File -Force -ErrorAction SilentlyContinue |
+                        Where-Object {
+                            $rel = $_.FullName.Substring($dirPath.Length + 1)
+                            $excluded = $false
+                            foreach ($excl in $defaultExcludes) {
+                                if ($rel.StartsWith($excl + [IO.Path]::DirectorySeparatorChar) -or $rel.StartsWith($excl + "/")) {
+                                    $excluded = $true
+                                    break
+                                }
+                            }
+                            $excluded
+                        } | Measure-Object -Property Length -Sum).Sum
+                } catch { }
+                if ($null -eq $excludedSize) { $excludedSize = 0 }
+
                 $profiles.Add([PSCustomObject]@{
-                    Name      = $dir.Name
-                    FullName  = $dir.FullName
-                    SizeMB    = [math]::Round($size / 1MB, 2)
-                    IsDefault = $dir.Name -eq 'Default'
+                    Name           = $key
+                    FullName       = $dirPath
+                    SizeMB         = [math]::Round($size / 1MB, 2)
+                    IsDefault      = $key -eq 'Default'
+                    DisplayName    = $displayName
+                    Email          = $email
+                    CriticalBacked = $criticalBacked
+                    CriticalTotal  = $criticalTotal
+                    CriticalDetails = $criticalDetails
+                    EstimatedSizeMB = [math]::Round(($size - $excludedSize) / 1MB, 2)
+                    ExcludedSizeMB = [math]::Round($excludedSize / 1MB, 2)
                 })
             }
         }
     }
-    elseif ($btype -eq "Gecko" -or $detectStrategy -eq "profilesIni") {
+    elseif ($btype -eq "Gecko" -or $detectStrategy -eq "profilesIni" -or $detectStrategy -eq "localProfilesDir") {
         $firefoxPath = $Browser.ProfilePath
-        $profilesIni = Join-Path $firefoxPath "profiles.ini"
-        if (Test-Path -LiteralPath $profilesIni -PathType Leaf) {
-            try {
-                $iniContent = Get-Content -LiteralPath $profilesIni -Raw -ErrorAction Stop
-            } catch {
-                Write-Verbose "Could not read profiles.ini: $_"
-                return $profiles.ToArray()
-            }
 
-            $currentSection = $null
-            $profileName = $null
-            $profilePath = $null
-            $defaultEncodedPath = $null
-
-            foreach ($line in ($iniContent -split "`r?`n")) {
-                $line = $line.Trim()
-                if ($line -match '^\[(Profile\d*)\]$') {
-                    if ($currentSection -and $profilePath) {
-                        $fullPath = if ([System.IO.Path]::IsPathRooted($profilePath)) {
-                            $profilePath
-                        } else {
-                            Join-Path $firefoxPath $profilePath
-                        }
-                        if (Test-Path -LiteralPath $fullPath -PathType Container) {
-                            $size = 0
-                            try {
-                                $size = (Get-ChildItem -LiteralPath $fullPath -Recurse -File -Force -ErrorAction SilentlyContinue |
-                                    Measure-Object -Property Length -Sum).Sum
-                            } catch { }
-                            if ($null -eq $size) { $size = 0 }
-                            $profiles.Add([PSCustomObject]@{
-                                Name      = if ($profileName) { $profileName } else { $currentSection }
-                                FullName  = $fullPath
-                                SizeMB    = [math]::Round($size / 1MB, 2)
-                                IsDefault = ($currentSection -eq "Profile0")
-                            })
-                        }
-                    }
-                    $currentSection = $matches[1]
-                    $profileName = $null
-                    $profilePath = $null
-                }
-                elseif ($line -match '^Name=(.+)$') {
-                    $profileName = $matches[1]
-                }
-                elseif ($line -match '^Path=(.+)$') {
-                    $profilePath = $matches[1]
-                }
-                elseif ($line -match '^Default=(.+)$' -and $currentSection -eq "Profile0") {
-                }
-            }
-
-            if ($currentSection -and $profilePath) {
-                $fullPath = if ([System.IO.Path]::IsPathRooted($profilePath)) {
-                    $profilePath
-                } else {
-                    Join-Path $firefoxPath $profilePath
-                }
-                if (Test-Path -LiteralPath $fullPath -PathType Container) {
+        if ($detectStrategy -eq "localProfilesDir") {
+            # Zen-style: profiles live in $firefoxPath\Profiles\<hash>.<name>
+            $profilesDir = Join-Path $firefoxPath "Profiles"
+            if (Test-Path -LiteralPath $profilesDir -PathType Container) {
+                $profileDirs = Get-ChildItem -LiteralPath $profilesDir -Directory -Force -ErrorAction SilentlyContinue
+                $isDefault = $true
+                foreach ($dir in $profileDirs) {
+                    $fullPath = $dir.FullName
                     $size = 0
                     try {
                         $size = (Get-ChildItem -LiteralPath $fullPath -Recurse -File -Force -ErrorAction SilentlyContinue |
                             Measure-Object -Property Length -Sum).Sum
                     } catch { }
                     if ($null -eq $size) { $size = 0 }
+
+                    $criticalBacked = 0
+                    $criticalTotal = $criticalFileNames.Count
+                    $criticalDetails = @()
+                    foreach ($cf in $criticalFileNames) {
+                        $cfPath = Join-Path $fullPath $cf
+                        $exists = Test-Path -LiteralPath $cfPath -PathType Leaf
+                        if ($exists) { $criticalBacked++ }
+                        $cfSize = 0
+                        if ($exists) {
+                            try { $cfSize = (Get-Item -LiteralPath $cfPath).Length } catch { }
+                        }
+                        $criticalDetails += [PSCustomObject]@{
+                            Name = $cf
+                            Exists = $exists
+                            SizeKB = [math]::Round($cfSize / 1KB, 1)
+                        }
+                    }
+
+                    # Strip <hash>. prefix to get display name (e.g. "9pr8v7oq.Default Profile" -> "Default Profile")
+                    $dirName = $dir.Name
+                    $displayName = $dirName
+                    $dotIdx = $dirName.IndexOf(".")
+                    if ($dotIdx -gt 0) { $displayName = $dirName.Substring($dotIdx + 1) }
+
                     $profiles.Add([PSCustomObject]@{
-                        Name      = if ($profileName) { $profileName } else { $currentSection }
-                        FullName  = $fullPath
-                        SizeMB    = [math]::Round($size / 1MB, 2)
-                        IsDefault = ($currentSection -eq "Profile0")
+                        Name           = $displayName
+                        FullName       = $fullPath
+                        SizeMB         = [math]::Round($size / 1MB, 2)
+                        IsDefault      = $isDefault
+                        DisplayName    = ""
+                        Email          = ""
+                        CriticalBacked = $criticalBacked
+                        CriticalTotal  = $criticalTotal
+                        CriticalDetails = $criticalDetails
+                        EstimatedSizeMB = [math]::Round($size / 1MB, 2)
+                        ExcludedSizeMB = 0
                     })
+                    $isDefault = $false
+                }
+            }
+        }
+        else {
+            # Standard Firefox-style: profiles.ini in APPDATA
+            $profilesIni = Join-Path $firefoxPath "profiles.ini"
+            if (Test-Path -LiteralPath $profilesIni -PathType Leaf) {
+                try {
+                    $iniContent = Get-Content -LiteralPath $profilesIni -Raw -ErrorAction Stop
+                } catch {
+                    Write-Verbose "Could not read profiles.ini: $_"
+                    return $profiles.ToArray()
+                }
+
+                $currentSection = $null
+                $profileName = $null
+                $profilePath = $null
+
+                foreach ($line in ($iniContent -split "`r?`n")) {
+                    $line = $line.Trim()
+                    if ($line -match '^\[(Profile\d*)\]$') {
+                        if ($currentSection -and $profilePath) {
+                            $fullPath = if ([System.IO.Path]::IsPathRooted($profilePath)) {
+                                $profilePath
+                            } else {
+                                Join-Path $firefoxPath $profilePath
+                            }
+                            if (Test-Path -LiteralPath $fullPath -PathType Container) {
+                                $size = 0
+                                try {
+                                    $size = (Get-ChildItem -LiteralPath $fullPath -Recurse -File -Force -ErrorAction SilentlyContinue |
+                                        Measure-Object -Property Length -Sum).Sum
+                                } catch { }
+                                if ($null -eq $size) { $size = 0 }
+
+                                $criticalBacked = 0
+                                $criticalTotal = $criticalFileNames.Count
+                                $criticalDetails = @()
+                                foreach ($cf in $criticalFileNames) {
+                                    $cfPath = Join-Path $fullPath $cf
+                                    $exists = Test-Path -LiteralPath $cfPath -PathType Leaf
+                                    if ($exists) { $criticalBacked++ }
+                                    $cfSize = 0
+                                    if ($exists) {
+                                        try { $cfSize = (Get-Item -LiteralPath $cfPath).Length } catch { }
+                                    }
+                                    $criticalDetails += [PSCustomObject]@{
+                                        Name = $cf
+                                        Exists = $exists
+                                        SizeKB = [math]::Round($cfSize / 1KB, 1)
+                                    }
+                                }
+
+                                $profiles.Add([PSCustomObject]@{
+                                    Name           = if ($profileName) { $profileName } else { $currentSection }
+                                    FullName       = $fullPath
+                                    SizeMB         = [math]::Round($size / 1MB, 2)
+                                    IsDefault      = ($currentSection -eq "Profile0")
+                                    DisplayName    = ""
+                                    Email          = ""
+                                    CriticalBacked = $criticalBacked
+                                    CriticalTotal  = $criticalTotal
+                                    CriticalDetails = $criticalDetails
+                                    EstimatedSizeMB = [math]::Round($size / 1MB, 2)
+                                    ExcludedSizeMB = 0
+                                })
+                            }
+                        }
+                        $currentSection = $matches[1]
+                        $profileName = $null
+                        $profilePath = $null
+                    }
+                    elseif ($line -match '^Name=(.+)$') {
+                        $profileName = $matches[1]
+                    }
+                    elseif ($line -match '^Path=(.+)$') {
+                        $profilePath = $matches[1]
+                    }
+                }
+
+                if ($currentSection -and $profilePath) {
+                    $fullPath = if ([System.IO.Path]::IsPathRooted($profilePath)) {
+                        $profilePath
+                    } else {
+                        Join-Path $firefoxPath $profilePath
+                    }
+                    if (Test-Path -LiteralPath $fullPath -PathType Container) {
+                        $size = 0
+                        try {
+                            $size = (Get-ChildItem -LiteralPath $fullPath -Recurse -File -Force -ErrorAction SilentlyContinue |
+                                Measure-Object -Property Length -Sum).Sum
+                        } catch { }
+                        if ($null -eq $size) { $size = 0 }
+                        $profiles.Add([PSCustomObject]@{
+                            Name      = if ($profileName) { $profileName } else { $currentSection }
+                            FullName  = $fullPath
+                            SizeMB    = [math]::Round($size / 1MB, 2)
+                            IsDefault = ($currentSection -eq "Profile0")
+                        })
+                    }
                 }
             }
         }

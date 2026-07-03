@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QComboBox, QPushButton, QLabel, QFileDialog,
     QLineEdit, QTextEdit, QMessageBox, QProgressBar, QCheckBox,
     QListWidget, QListWidgetItem, QGroupBox, QGridLayout, QScrollArea,
-    QSpinBox, QSplitter, QFrame, QStatusBar
+    QSpinBox, QSplitter, QFrame, QStatusBar, QFormLayout
 )
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
 from PySide6.QtGui import QFont, QIcon
@@ -82,16 +82,60 @@ class ProfileListItem(QWidget):
         layout.addWidget(self.checkbox)
 
         name = profile_data["name"]
+        display_name = profile_data.get("display_name", "")
+        email = profile_data.get("email", "")
         size = profile_data["size_mb"]
         is_default = profile_data.get("is_default", False)
-        label_text = f"<b>{name}</b> "
+
+        # Build label: "Default — Your Chrome (theyonecodes@gmail.com) (Default) (123.4 MB)"
+        label_text = f"<b>{name}</b>"
+        if display_name and display_name != name:
+            label_text += f" — {display_name}"
+        if email:
+            label_text += f" <span style='color:#888;'>({email})</span>"
         if is_default:
-            label_text = f"<b>{name}</b> <i>(Default)</i> "
-        size_text = f"<span style='color:#666;'>({size:.1f} MB)</span>"
+            label_text += " <i>(Default)</i>"
+        size_text = f" <span style='color:#666;'>({size:.1f} MB)</span>"
         self.label = QLabel(label_text + size_text)
         self.label.setMinimumWidth(400)
         layout.addWidget(self.label)
         layout.addStretch()
+
+        # Critical files summary — shows what preserves logins
+        self.detail_label = QLabel()
+        self.detail_label.setStyleSheet("color: #7f8c8d; font-size: 10px;")
+        self.detail_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.detail_label)
+
+        # Load critical files status in background to avoid UI freeze
+        self._load_detail(profile_data.get("full_path", ""))
+
+    def _load_detail(self, profile_path):
+        """Populate the detail label with critical files + estimated size."""
+        if not profile_path:
+            self.detail_label.setText("")
+            return
+        try:
+            from core.detection import BrowserDetection
+            summary = BrowserDetection.get_profile_backup_summary(profile_path)
+            critical = summary.get("critical_files", [])
+            backed_up = sum(1 for c in critical if c["exists"])
+            total = len(critical)
+            est = summary.get("estimated_size_mb", 0)
+            excluded = summary.get("excluded_size_mb", 0)
+            file_count = summary.get("file_count", 0)
+
+            # Build compact line: "8/8 critical ✓ | 234 files | 45.6 MB (excl 12.3 MB cache)"
+            parts = []
+            parts.append(f"<span style='color:{'#2ecc71' if backed_up == total else '#e67e22'};'>{backed_up}/{total} critical ✓</span>")
+            parts.append(f"{file_count} files")
+            if excluded > 0:
+                parts.append(f"{est:.1f} MB (excl {excluded:.1f} MB cache)")
+            else:
+                parts.append(f"{est:.1f} MB")
+            self.detail_label.setText(" | ".join(parts))
+        except Exception:
+            self.detail_label.setText("")
 
     def is_checked(self):
         return self.checkbox.isChecked()

@@ -137,14 +137,14 @@
         {
             "name": "Zen Browser",
             "alias": "Zen",
-            "type": "Chromium",
+            "type": "Gecko",
             "engineFamily": "Firefox",
             "icon": "zen",
             "processName": "zen",
-            "profileRoot": "Default",
-            "detectStrategy": "localState",
-            "localPath": "Zen\\User Data",
-            "programFilesPath": null
+            "profileRoot": "Profiles",
+            "detectStrategy": "localProfilesDir",
+            "localPath": "zen",
+            "programFilesPath": "Zen Browser"
         },
         {
             "name": "Thorium",

@@ -50,9 +50,6 @@ $xaml = @'
 <Window
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-    mc:Ignorable="d"
     Title="Universal Browser Backup v2.1.1"
     Height="720" Width="1000"
     WindowStartupLocation="CenterScreen"
@@ -60,7 +57,7 @@ $xaml = @'
     Foreground="#FFCDD6F4"
     FontFamily="Segoe UI"
     FontSize="13"
-    d:DesignHeight="720" d:DesignWidth="1000">
+>
 
     <Window.Resources>
         <ResourceDictionary>
@@ -109,21 +106,11 @@ $xaml = @'
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="ListBoxItem">
-                            <Border x:Name="border" Background="Transparent" 
+                            <Border Background="Transparent" 
                                     BorderBrush="Transparent" BorderThickness="0"
                                     SnapsToDevicePixels="True">
                                 <ContentPresenter/>
                             </Border>
-                            <ControlTemplate.Triggers>
-                                <Trigger Property="IsSelected" Value="True">
-                                    <Setter TargetName="border" Property="Background" Value="#FF313244"/>
-                                    <Setter TargetName="border" Property="BorderBrush" Value="#FF89B4FA"/>
-                                    <Setter TargetName="border" Property="BorderThickness" Value="1"/>
-                                </Trigger>
-                                <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter TargetName="border" Property="Background" Value="#FF1E1E2E"/>
-                                </Trigger>
-                            </ControlTemplate.Triggers>
                         </ControlTemplate>
                     </Setter.Value>
                 </Setter>
@@ -301,14 +288,59 @@ $xaml = @'
                                         <DataTemplate>
                                             <Border Background="Transparent" Padding="4" Margin="2">
                                                 <StackPanel Orientation="Horizontal" Margin="4">
-                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" 
-                                                               Foreground="#FFCDD6F4" Width="180"/>
+                                                    <StackPanel Width="160">
+                                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" 
+                                                                   Foreground="#FFCDD6F4" FontSize="12"/>
+                                                        <TextBlock Foreground="#FF89B4FA" FontSize="11" Margin="0,1,0,0">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Text" Value="{Binding DisplayName, Mode=OneWay}"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding DisplayName, Mode=OneWay}" Value="">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                        <TextBlock Foreground="#FFA6E3A1" FontSize="10" Margin="0,1,0,0">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Text" Value="{Binding Email, Mode=OneWay}"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding Email, Mode=OneWay}" Value="">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </StackPanel>
                                                     <TextBlock Text="{Binding SizeMB}" 
                                                                StringFormat="{}{0:F1} MB" 
-                                                               Foreground="#FF6C7086" Width="80"/>
+                                                               Foreground="#FF6C7086" Width="80"
+                                                               VerticalAlignment="Center"/>
+                                                    <StackPanel VerticalAlignment="Center" Margin="8,0,0,0">
+                                                        <TextBlock FontSize="11">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Foreground" Value="#FFA6E3A1"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding CriticalBacked, Mode=OneWay}" Value="">
+                                                                            <Setter Property="Text" Value="Checking..."/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                            <Run Text="{Binding CriticalBacked, Mode=OneWay, StringFormat='{}{0}'}"/><Run Text="/"/><Run Text="{Binding CriticalTotal, Mode=OneWay, StringFormat='{}{0}'}"/><Run Text=" critical"/>
+                                                        </TextBlock>
+                                                        <TextBlock Text="{Binding ExcludedSizeMB, StringFormat='{}-{0:F1} MB cache excluded'}" 
+                                                                   Foreground="#FF6C7086" FontSize="10"/>
+                                                    </StackPanel>
                                                     <TextBlock Text="{Binding IsDefault}" 
                                                                StringFormat="Default: {0}" 
-                                                               Foreground="#FFA6E3A1" FontSize="11"/>
+                                                               Foreground="#FFA6E3A1" FontSize="11"
+                                                               VerticalAlignment="Center"/>
                                                 </StackPanel>
                                             </Border>
                                         </DataTemplate>
@@ -612,9 +644,12 @@ $BackupBtn.Add_Click({
                 if ($r.Result.Success) { $success++ }
             }
             Update-StatusBar "Backup complete: $success/$total succeeded" "#FFA6E3A1"
-            [System.Windows.MessageBox]::Show(($results | ForEach-Object { 
-                "{0} - {1}: {2}" -f $_.Browser, $_.Profile, (if ($_.Result.Success) { "OK - $($_.Result.Path) ($($_.Result.SizeMB) MB)" } else { "FAILED: $($_.Result.Message)" }) 
-            }) -join "`n"), "Backup Results", 'OK', 'Information')
+            $lines = @()
+            foreach ($r in $results) {
+                $status = if ($r.Result.Success) { "OK - $($r.Result.Path) ($($r.Result.SizeMB) MB)" } else { "FAILED: $($r.Result.Message)" }
+                $lines += "$($r.Browser) - $($r.Profile): $status"
+            }
+            [System.Windows.MessageBox]::Show(($lines -join "`n"), "Backup Results", 'OK', 'Information')
         } else {
             Set-Progress (($job.Id % 100)) "Processing..." $true
         }
