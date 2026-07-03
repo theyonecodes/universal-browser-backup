@@ -149,7 +149,7 @@ class Worker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Universal Browser Backup v2.1")
+        self.setWindowTitle("Universal Browser Backup v2.1.1")
         self.setMinimumSize(950, 700)
         self.resize(1050, 750)
 
@@ -1151,7 +1151,7 @@ def parse_cli_args():
 
 def cli_main(args):
     if args.version:
-        print("Universal Browser Backup v2.1")
+        print("Universal Browser Backup v2.1.1")
         return 0
     if args.logs:
         print(f"Log file: {get_log_path()}")
@@ -1254,7 +1254,7 @@ def main():
     app.setStyle("Fusion")
     app.setApplicationName("Universal Browser Backup")
     app.setOrganizationName("Universal Browser Backup")
-    app.setApplicationVersion("2.1")
+    app.setApplicationVersion("2.1.1")
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

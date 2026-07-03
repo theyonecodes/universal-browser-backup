@@ -1,4 +1,4 @@
-# Universal Browser Backup v2.1
+# Universal Browser Backup v2.1.1
 
 A PowerShell + Python tool to back up, restore, verify, compare, schedule, and export browser profiles across Chromium and Gecko browsers on Windows 10/11.
 
@@ -342,10 +342,36 @@ Override any field by copying `Config\browsers.json` to `%APPDATA%\UniversalBrow
 | `defaults.robocopyWait` | Seconds between retries. |
 | `defaults.maxLogFiles` | How many log files to retain. |
 | `defaults.checksumCriticalFiles` | Files rehashed for verification. |
-| `chromiumPaths.local` | Local-AppData folders to scan. |
-| `chromiumPaths.programFiles` | Program-Files folders used to find executables for the version probe. |
-| `geckoPaths.appData` | Firefox AppData root. |
-| `processNames` | `DisplayName → process.exe` mapping so we can find running browsers robustly. |
+| `chromiumPaths.local` | Local-AppData folders to scan (legacy format). |
+| `chromiumPaths.programFiles` | Program-Files folders used to find executables (legacy format). |
+| `geckoPaths.appData` | Firefox AppData root (legacy format). |
+| `processNames` | `DisplayName → process.exe` mapping for robust browser detection. |
+| `browsers[]` | **New format** — 46 browser definitions with `detectStrategy`, `profilePath`, `exePath`, `engineFamily`. |
+
+### Manifest v2.1.1
+
+Every backup creates `manifest.json` with:
+
+```json
+{
+  "version": "2.1.1",
+  "created": "2026-07-03T12:00:00Z",
+  "browser": "Chrome",
+  "profile": "Default",
+  "vTag": "Chrome-Default",
+  "selectionHash": "a1b2c3d4e5f6g7h8",
+  "preflight": {
+    "browserRunning": false,
+    "diskFreeGB": 45.2,
+    "processName": "chrome.exe"
+  },
+  "checksums": { ... }
+}
+```
+
+- **vTag** — short human-readable identifier (`browser-profile`)
+- **selectionHash** — SHA-256 truncated to 16 chars; changes if browser/profile/destination selection changes
+- **preflight** — snapshot of pre-backup conditions for diagnostics
 
 ---
 

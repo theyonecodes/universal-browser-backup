@@ -1,4 +1,4 @@
-# Cookbook — `Universal Browser Backup v2.1`
+# Cookbook — `Universal Browser Backup v2.1.1`
 
 Concrete recipes for common jobs. Pick the one that matches your situation.
 

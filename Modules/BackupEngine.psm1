@@ -41,32 +41,68 @@ function New-Manifest {
     if ($null -eq $totalSize) { $totalSize = 0 }
     $fileCount = $files.Count
 
-    $manifest = [ordered]@{
-        version     = "2.1.0"
-        timestamp   = (Get-Date).ToString("o")
-        browser     = [ordered]@{
-            name    = [string]$Browser.Name
-            type    = [string]$Browser.Type
-            version = [string]$Browser.Version
-            rawName = [string]$Browser.RawName
+    $timestamp = (Get-Date).ToString("o")
+    $selectionData = "$($Browser.Name)|$ProfileName|$timestamp"
+    $selectionHashBytes = [System.Text.Encoding]::UTF8.GetBytes($selectionData)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $selectionHash = [System.BitConverter]::ToString($sha256.ComputeHash($selectionHashBytes)).Replace("-", "").Substring(0, 16)
+
+    # Preflight data
+    $isRunning = $false
+    if ($Browser.ProcessName) {
+        try {
+            $result = Get-Process -Name $Browser.ProcessName -ErrorAction SilentlyContinue
+            $isRunning = $null -ne $result
+        } catch { }
+    }
+
+    $diskFreeGB = $null
+    try {
+        $destRoot = Split-Path -Qualifier $BackupPath
+        if (-not $destRoot) { $destRoot = [System.IO.Path]::GetPathRoot($BackupPath) }
+        if ($destRoot) {
+            $disk = Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='$destRoot'" -ErrorAction SilentlyContinue
+            if ($disk) {
+                $diskFreeGB = [math]::Round($disk.FreeSpace / 1GB, 2)
+            }
         }
-        profile     = $ProfileName
-        source      = [string]$Browser.ProfilePath
-        destination = $BackupPath
-        stats       = [ordered]@{
+    } catch { }
+
+    $manifest = [ordered]@{
+        version       = "2.1.1"
+        vTag          = "2.1.1"
+        timestamp     = $timestamp
+        selectionHash = $selectionHash
+        browser       = [ordered]@{
+            name          = [string]$Browser.Name
+            type          = [string]$Browser.Type
+            version       = [string]$Browser.Version
+            rawName       = [string]$Browser.RawName
+            engineFamily  = [string]$Browser.EngineFamily
+            detectStrategy = [string]$Browser.DetectStrategy
+        }
+        profile       = $ProfileName
+        source        = [string]$Browser.ProfilePath
+        destination   = $BackupPath
+        stats         = [ordered]@{
             fileCount    = $fileCount
             totalSize    = $totalSize
             totalSizeMB  = [math]::Round($totalSize / 1MB, 2)
         }
-        robocopy    = [ordered]@{
+        robocopy      = [ordered]@{
             exitCode = $RobocopyExitCode
             logFile  = $LogFile
         }
-        checksums   = $checksums
-        machine     = [ordered]@{
+        checksums     = $checksums
+        machine       = [ordered]@{
             name = [string]$env:COMPUTERNAME
             user = [string]$env:USERNAME
             os   = [System.Environment]::OSVersion.VersionString
+        }
+        preflight     = [ordered]@{
+            browserRunning = $isRunning
+            diskFreeGB     = $diskFreeGB
+            processName    = [string]$Browser.ProcessName
         }
     }
 

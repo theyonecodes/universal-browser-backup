@@ -1,10 +1,25 @@
 # Changelog
 
-## [2.1.1] - 2026-07-02
+## [2.1.1] - 2026-07-03
 
 ### Added
-- New `COOKBOOK.md` — 14 numbered, ready-to-paste recipes (CLI, GUI, scheduled-task examples, forensics recipes for damaged backups, custom-config walkthrough, exit codes).
-- README rewritten with TOC, ASCII banner, full "How X Works" sections (backup / restore / verify / compare / schedule / export-import), troubleshooting matrix, exit-code table.
+- `GUI/App.ps1` — full WPF PowerShell GUI with browser list, profile selection, backup/restore progress, multi-select, background jobs
+- `UniversalBrowserBackup.bat` now offers menu choice: PowerShell WPF or Python Qt GUI
+- Manifest v2.1.1 fields: `vTag`, `selectionHash` (SHA256 truncated), `preflight` (browserRunning, diskFreeGB, processName)
+- `Config.psm1` dual-format parser: supports new `browsers[]` array AND legacy `chromiumPaths`/`geckoPaths` dicts
+- `Config/browsers.json` expanded to 46 browser definitions (was 24) with version 2.1.1
+- `BrowserDetection.psm1` rewritten to use new `browsers[]` array and `detectStrategy` field
+- `Tests/test_gui_xaml.ps1` — XAML validation helper for GUI/App.ps1
+- Runtime icon loading in GUI/App.ps1 with fallback if .ico file not found
+
+### Fixed
+- XAML parse errors: removed `Cursor="Hand"` Setter, `ControlTemplate.Triggers` (Setter with TargetName unsupported by XamlReader::Load), `Icon=""` attribute, and inline `Click`/`SelectionChanged` event handler references
+- `Config.psm1` warning "chromiumPaths cannot be found" — strict-mode `PropertyNotFoundException` fixed via `PSObject.Properties` check
+- Version strings updated to 2.1.1 in `main.py`, `UniversalBrowserBackup.bat`, `README.md`, `COOKBOOK.md`
+
+### Changed
+- `Config/browsers.json` version bumped to 2.1.1 with new schema: `browsers[]` array using `detectStrategy` field (localState / profilesIni) instead of `chromiumPaths`/`geckoPaths` dicts
+- Detection engine in `core/detection.py` uses `config.get("browsers", [])` with detectStrategy-driven profile discovery
 
 ## [2.1.0] - 2026-07-02
 

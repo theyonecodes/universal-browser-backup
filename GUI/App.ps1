@@ -1,327 +1,746 @@
+# GUI/App.ps1 — WPF PowerShell GUI for Universal Browser Backup v2.1.1
+# This is the GUI entry point called by UniversalBrowserBackup.ps1
+
 <# 
 .SYNOPSIS
-    Universal Browser Backup GUI - WPF frontend
+    WPF-based GUI for Universal Browser Backup
 .DESCRIPTION
-    Accepts -Config and -LogFile from the CLI host so logging stays in one file.
+    Provides a graphical interface for backup, restore, and browser management
+    using the new 46-browser detection schema (v2.1.1).
+.PARAMETER Config
+    Hashtable configuration from Config.psm1
+.PARAMETER LogFile
+    Path to the log file for this session
 #>
+
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)] $Config,
+    [Parameter(Mandatory)] [hashtable]$Config,
     [Parameter(Mandatory)] [string]$LogFile
 )
 
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-
-$script:ModuleRoot = Split-Path -Parent $PSScriptRoot
-$script:config = $Config
-$script:logFile = $LogFile
-$script:jobRunning = $false
-$script:cancelRequested = $false
-$script:psInstance = $null
-$script:runspace = $null
-$script:dispatcherTimer = $null
-
-# Load modules in this runspace
-Import-Module (Join-Path $script:ModuleRoot 'Modules\Config.psm1')          -Force -DisableNameChecking
-Import-Module (Join-Path $script:ModuleRoot 'Modules\BrowserDetection.psm1') -Force -DisableNameChecking
-Import-Module (Join-Path $script:ModuleRoot 'Modules\Logging.psm1')          -Force -DisableNameChecking
-Import-Module (Join-Path $script:ModuleRoot 'Modules\BackupEngine.psm1')     -Force -DisableNameChecking
-Import-Module (Join-Path $script:ModuleRoot 'Modules\RestoreEngine.psm1')    -Force -DisableNameChecking
-
+# Add required assemblies
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
-Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Xaml
 
-$xamlPath = Join-Path $PSScriptRoot 'MainWindow.xaml'
-$xaml = Get-Content -LiteralPath $xamlPath -Raw -ErrorAction Stop
-# Strip code-behind artifacts
-$xaml = $xaml -replace 'x:Class="[^"]*"', ''
-$xaml = $xaml -replace 'mc:Ignorable="d"', ''
+# Import modules
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$rootDir = Split-Path -Parent $scriptRoot
 
-$reader = [System.Xml.XmlNodeReader]::new([xml]$xaml)
-$window = [System.Windows.Markup.XamlReader]::Load($reader)
-if (-not $window) { throw 'Failed to load XAML' }
+Import-Module (Join-Path $rootDir 'Modules\Config.psm1')          -Force -DisableNameChecking
+Import-Module (Join-Path $rootDir 'Modules\BrowserDetection.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $rootDir 'Modules\Logging.psm1')          -Force -DisableNameChecking
+Import-Module (Join-Path $rootDir 'Modules\BackupEngine.psm1')     -Force -DisableNameChecking
+Import-Module (Join-Path $rootDir 'Modules\RestoreEngine.psm1')    -Force -DisableNameChecking
 
-# Resolve named elements once
-function Find($name) { $window.FindName($name) }
+# Global state
+$script:browsers = @()
+$script:selectedBrowser = $null
+$script:selectedProfile = $null
 
-$txtDestination = Find 'txtDestination'
-$lstBrowsers    = Find 'lstBrowsers'
-$txtLog         = Find 'txtLog'
-$progressBar    = Find 'progressBar'
-$txtProgress    = Find 'txtProgress'
-$txtStatus      = Find 'txtStatus'
-$btnAction      = Find 'btnAction'
-$btnCancel      = Find 'btnCancel'
-$btnRefresh     = Find 'btnRefresh'
-$btnBrowse      = Find 'btnBrowse'
-$chkSelectAll   = Find 'chkSelectAll'
-$radBackup      = Find 'radBackup'
-$radRestore     = Find 'radRestore'
+# Initialize logging
+Write-Log -Message "Starting GUI" -Level "INFO" -LogFile $LogFile
 
-$txtDestination.Text = [System.Environment]::ExpandEnvironmentVariables($script:config.defaults.backupDestination)
+# ---------------------------------------------------------------------------
+# XAML DEFINITION
+# ---------------------------------------------------------------------------
+$xaml = @'
+<Window
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="Universal Browser Backup v2.1.1"
+    Height="720" Width="1000"
+    WindowStartupLocation="CenterScreen"
+    Background="#FF1E1E2E"
+    Foreground="#FFCDD6F4"
+    FontFamily="Segoe UI"
+    FontSize="13"
+    d:DesignHeight="720" d:DesignWidth="1000">
 
-# ---------- UI Helpers ----------
-function Write-GUI {
-    param([string]$Message, [ValidateSet('INFO','WARN','ERROR','OK')][string]$Level = 'INFO')
-    $timestamp = Get-Date -Format 'HH:mm:ss'
-    $prefix = switch ($Level) {
-        'INFO'  { '[INFO]' }
-        'WARN'  { '[WARN]' }
-        'ERROR' { '[FAIL]' }
-        'OK'    { '[ OK ]' }
+    <Window.Resources>
+        <ResourceDictionary>
+            <Style x:Key="DarkButton" TargetType="Button">
+                <Setter Property="Background" Value="#FF313244"/>
+                <Setter Property="Foreground" Value="#FFCDD6F4"/>
+                <Setter Property="BorderBrush" Value="#FF45475A"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="Padding" Value="12,6"/>
+                <Setter Property="Margin" Value="4"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="border" Background="{TemplateBinding Background}" 
+                                    BorderBrush="{TemplateBinding BorderBrush}" 
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="4">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <Style x:Key="AccentButton" TargetType="Button" BasedOn="{StaticResource DarkButton}">
+                <Setter Property="Background" Value="#FF89B4FA"/>
+                <Setter Property="Foreground" Value="#FF1E1E2E"/>
+                <Setter Property="BorderBrush" Value="#FF89B4FA"/>
+            </Style>
+
+            <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource DarkButton}">
+                <Setter Property="Background" Value="#FFF38BA8"/>
+                <Setter Property="Foreground" Value="#FF1E1E2E"/>
+                <Setter Property="BorderBrush" Value="#FFF38BA8"/>
+            </Style>
+
+            <Style TargetType="ListBox">
+                <Setter Property="Background" Value="#FF181825"/>
+                <Setter Property="Foreground" Value="#FFCDD6F4"/>
+                <Setter Property="BorderBrush" Value="#FF313244"/>
+                <Setter Property="BorderThickness" Value="1"/>
+            </Style>
+
+            <Style TargetType="ListBoxItem">
+                <Setter Property="Padding" Value="8,4"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ListBoxItem">
+                            <Border x:Name="border" Background="Transparent" 
+                                    BorderBrush="Transparent" BorderThickness="0"
+                                    SnapsToDevicePixels="True">
+                                <ContentPresenter/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsSelected" Value="True">
+                                    <Setter TargetName="border" Property="Background" Value="#FF313244"/>
+                                    <Setter TargetName="border" Property="BorderBrush" Value="#FF89B4FA"/>
+                                    <Setter TargetName="border" Property="BorderThickness" Value="1"/>
+                                </Trigger>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="border" Property="Background" Value="#FF1E1E2E"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <Style TargetType="TextBlock">
+                <Setter Property="Foreground" Value="#FFCDD6F4"/>
+            </Style>
+
+            <Style TargetType="Label">
+                <Setter Property="Foreground" Value="#FFCDD6F4"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+            </Style>
+
+            <Style TargetType="TextBox">
+                <Setter Property="Background" Value="#FF181825"/>
+                <Setter Property="Foreground" Value="#FFCDD6F4"/>
+                <Setter Property="BorderBrush" Value="#FF313244"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="Padding" Value="6,4"/>
+                <Setter Property="CaretBrush" Value="#FF89B4FA"/>
+            </Style>
+
+            <Style TargetType="ProgressBar">
+                <Setter Property="Background" Value="#FF181825"/>
+                <Setter Property="Foreground" Value="#FF89B4FA"/>
+                <Setter Property="BorderBrush" Value="#FF313244"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="Height" Value="16"/>
+            </Style>
+
+            <Style TargetType="CheckBox">
+                <Setter Property="Foreground" Value="#FFCDD6F4"/>
+            </Style>
+
+            <Style TargetType="GroupBox">
+                <Setter Property="BorderBrush" Value="#FF313244"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="Margin" Value="4"/>
+                <Setter Property="Padding" Value="8"/>
+            </Style>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- HEADER -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
+            <TextBlock Text="Universal Browser Backup" FontSize="24" FontWeight="Bold" 
+                       Foreground="#FF89B4FA" VerticalAlignment="Center"/>
+            <TextBlock Text="v2.1.1" FontSize="14" Foreground="#FF6C7086" 
+                       VerticalAlignment="Center" Margin="12,0,0,4"/>
+            <TextBlock Text=" • " FontSize="14" Foreground="#FF6C7086" VerticalAlignment="Center"/>
+            <TextBlock x:Name="StatusText" Text="Ready" FontSize="12" 
+                       Foreground="#FFA6E3A1" VerticalAlignment="Center" Margin="8,0,0,4"/>
+        </StackPanel>
+
+        <!-- MAIN CONTENT -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="360"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- LEFT PANEL: BROWSER LIST -->
+            <GroupBox Grid.Column="0" Header="Detected Browsers (46 browsers supported)">
+                <DockPanel LastChildFill="True">
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button x:Name="RefreshBtn" Content="↻ Refresh" Style="{StaticResource DarkButton}" 
+                                Width="100"/>
+                        <Button x:Name="SelectAllBtn" Content="☑ Select All" Style="{StaticResource DarkButton}" 
+                                Width="100" Margin="8,0,0,0"/>
+                        <Button x:Name="ClearAllBtn" Content="☐ Clear All" Style="{StaticResource DarkButton}" 
+                                Width="100" Margin="8,0,0,0"/>
+                    </StackPanel>
+
+                    <ListBox x:Name="BrowserList" DockPanel.Dock="Top" SelectionMode="Multiple">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="Transparent" Padding="4" Margin="2">
+                                    <StackPanel Orientation="Horizontal" Margin="4">
+                                        <TextBlock x:Name="BrowserIcon" Text="{Binding Icon}" 
+                                                   FontSize="18" Width="28" Height="28" 
+                                                   VerticalAlignment="Center" HorizontalAlignment="Center"
+                                                   Background="#FF313244" Foreground="#FFCDD6F4"
+                                                   FontFamily="Segoe UI Symbol"/>
+                                        <StackPanel Orientation="Vertical" Margin="8,0,0,0" VerticalAlignment="Center">
+                                            <TextBlock x:Name="BrowserName" Text="{Binding Name}" 
+                                                       FontWeight="SemiBold" FontSize="13" Foreground="#FFCDD6F4"/>
+                                            <TextBlock x:Name="BrowserDetails" FontSize="11" Foreground="#FF6C7086">
+                                                <Run Text="{Binding Type}"/>
+                                                <Run Text=" • "/>
+                                                <Run Text="{Binding EngineFamily}"/>
+                                                <Run Text=" • v"/>
+                                                <Run Text="{Binding Version}"/>
+                                                <Run Text=" • "/>
+                                                <Run Text="{Binding DetectStrategy}"/>
+                                            </TextBlock>
+                                            <TextBlock x:Name="BrowserPath" Text="{Binding ProfilePath}" 
+                                                       FontSize="10" Foreground="#FF6C7086" 
+                                                       TextTrimming="CharacterEllipsis" MaxWidth="280"/>
+                                            <TextBlock x:Name="BrowserExe" FontSize="10" Foreground="#FF6C7086">
+                                                <Run Text="Exe: "/>
+                                                <Run Text="{Binding ExePath}"/>
+                                            </TextBlock>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </GroupBox>
+
+            <!-- RIGHT PANEL: DETAILS & ACTIONS -->
+            <Grid Grid.Column="1" Margin="12,0,0,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="DetailsPanel">
+                        <GroupBox Header="Browser Details">
+                            <StackPanel>
+                                <TextBlock x:Name="DetailName" FontSize="16" FontWeight="Bold" 
+                                           Foreground="#FF89B4FA" TextWrapping="Wrap"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                    <TextBlock Text="Type: " FontSize="12" Foreground="#FF6C7086"/>
+                                    <TextBlock x:Name="DetailType" FontSize="12" Foreground="#FFCDD6F4"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                    <TextBlock Text="Engine: " FontSize="12" Foreground="#FF6C7086"/>
+                                    <TextBlock x:Name="DetailEngine" FontSize="12" Foreground="#FFCDD6F4"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                    <TextBlock Text="Detection: " FontSize="12" Foreground="#FF6C7086"/>
+                                    <TextBlock x:Name="DetailDetect" FontSize="12" Foreground="#FFCDD6F4"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                    <TextBlock Text="Version: " FontSize="12" Foreground="#FF6C7086"/>
+                                    <TextBlock x:Name="DetailVersion" FontSize="12" Foreground="#FFCDD6F4"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                    <TextBlock Text="Process: " FontSize="12" Foreground="#FF6C7086"/>
+                                    <TextBlock x:Name="DetailProcess" FontSize="12" Foreground="#FFCDD6F4"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                    <TextBlock Text="Executable: " FontSize="12" Foreground="#FF6C7086"/>
+                                    <TextBlock x:Name="DetailExe" FontSize="12" Foreground="#FFCDD6F4" TextWrapping="Wrap" MaxWidth="400"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                    <TextBlock Text="Profile Root: " FontSize="12" Foreground="#FF6C7086"/>
+                                    <TextBlock x:Name="DetailProfileRoot" FontSize="12" Foreground="#FFCDD6F4"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                    <TextBlock Text="Profile Path: " FontSize="12" Foreground="#FF6C7086"/>
+                                    <TextBlock x:Name="DetailProfilePath" FontSize="12" Foreground="#FFCDD6F4" TextWrapping="Wrap" MaxWidth="400"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Profiles" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock x:Name="NoProfileText" Text="Select a browser to view profiles" 
+                                           Foreground="#FF6C7086" FontStyle="Italic" Margin="4"/>
+                                <ListBox x:Name="ProfileList" Visibility="Collapsed" 
+                                         SelectionMode="Multiple" Height="200">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="Transparent" Padding="4" Margin="2">
+                                                <StackPanel Orientation="Horizontal" Margin="4">
+                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" 
+                                                               Foreground="#FFCDD6F4" Width="180"/>
+                                                    <TextBlock Text="{Binding SizeMB}" 
+                                                               StringFormat="{}{0:F1} MB" 
+                                                               Foreground="#FF6C7086" Width="80"/>
+                                                    <TextBlock Text="{Binding IsDefault}" 
+                                                               StringFormat="Default: {0}" 
+                                                               Foreground="#FFA6E3A1" FontSize="11"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <GroupBox Header="Backup Options" Margin="0,12,0,0">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <Label Content="Destination:" Width="100"/>
+                                    <TextBox x:Name="DestTextBox" Width="400" 
+                                             Text="{Binding Defaults.BackupDestination, Mode=TwoWay}"/>
+                                    <Button x:Name="BrowseDestBtn" Content="Browse..." Style="{StaticResource DarkButton}" 
+                                            Width="80" Margin="8,0,0,0"/>
+                                </StackPanel>
+                                <CheckBox x:Name="ExcludeCacheCheck" Content="Exclude cache/temp directories" 
+                                          IsChecked="True" Margin="0,4,0,0"/>
+                                <CheckBox x:Name="ForceCheck" Content="Force close running browsers" 
+                                          IsChecked="False" Margin="0,4,0,0"/>
+                                <CheckBox x:Name="AllProfilesCheck" Content="Backup all profiles (not just selected)" 
+                                          IsChecked="False" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </GroupBox>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- ACTION BUTTONS -->
+                <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                    <Button x:Name="BackupBtn" Content="⬇ Backup Selected" Style="{StaticResource AccentButton}" 
+                            Width="150" IsEnabled="False"/>
+                    <Button x:Name="RestoreBtn" Content="⬆ Restore" Style="{StaticResource DarkButton}" 
+                            Width="100" Margin="8,0,0,0" IsEnabled="False"/>
+                    <Button x:Name="ListBtn" Content="📋 List All" Style="{StaticResource DarkButton}" 
+                            Width="100" Margin="8,0,0,0"/>
+                </StackPanel>
+            </Grid>
+        </Grid>
+
+        <!-- STATUS BAR -->
+        <StatusBar Grid.Row="2" Background="#FF181825" BorderBrush="#FF313244" BorderThickness="0,1,0,0" Margin="-12,0,-12,-12">
+            <StatusBarItem>
+                <TextBlock x:Name="StatusBarText" Text="Ready" FontSize="11" Foreground="#FFA6E3A1"/>
+            </StatusBarItem>
+            <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}" 
+                       Background="#FF313244" Width="1" Margin="8,0"/>
+            <StatusBarItem>
+                <ProgressBar x:Name="ProgressBar" Width="200" Height="16" Visibility="Collapsed" 
+                             Minimum="0" Maximum="100" Value="0"/>
+            </StatusBarItem>
+            <StatusBarItem>
+                <TextBlock x:Name="ProgressText" FontSize="11" Foreground="#FFCDD6F4" Visibility="Collapsed"/>
+            </StatusBarItem>
+        </StatusBar>
+    </Grid>
+</Window>
+'@
+
+# ---------------------------------------------------------------------------
+# PARSE XAML & CONNECT EVENTS
+# ---------------------------------------------------------------------------
+$reader = [System.Xml.XmlNodeReader] ([xml]$xaml)
+$window = [Windows.Markup.XamlReader]::Load($reader)
+
+# Set icon from file if available (not embedded)
+$icoPath = Join-Path $scriptRoot "..\UniversalBrowserBackup.ico"
+if (-not (Test-Path $icoPath)) { $icoPath = Join-Path $scriptRoot "..\icon.ico" }
+if (Test-Path $icoPath) {
+    try { $window.Icon = [System.Windows.Media.Imaging.BitmapImage]::new([Uri]::new($icoPath)) } catch {}
+}
+
+# Find controls
+$BrowserList = $window.FindName("BrowserList")
+$ProfileList = $window.FindName("ProfileList")
+$NoProfileText = $window.FindName("NoProfileText")
+$DetailName = $window.FindName("DetailName")
+$DetailType = $window.FindName("DetailType")
+$DetailEngine = $window.FindName("DetailEngine")
+$DetailDetect = $window.FindName("DetailDetect")
+$DetailVersion = $window.FindName("DetailVersion")
+$DetailProcess = $window.FindName("DetailProcess")
+$DetailExe = $window.FindName("DetailExe")
+$DetailProfileRoot = $window.FindName("DetailProfileRoot")
+$DetailProfilePath = $window.FindName("DetailProfilePath")
+$RefreshBtn = $window.FindName("RefreshBtn")
+$SelectAllBtn = $window.FindName("SelectAllBtn")
+$ClearAllBtn = $window.FindName("ClearAllBtn")
+$BackupBtn = $window.FindName("BackupBtn")
+$RestoreBtn = $window.FindName("RestoreBtn")
+$ListBtn = $window.FindName("ListBtn")
+$BrowseDestBtn = $window.FindName("BrowseDestBtn")
+$DestTextBox = $window.FindName("DestTextBox")
+$ExcludeCacheCheck = $window.FindName("ExcludeCacheCheck")
+$ForceCheck = $window.FindName("ForceCheck")
+$AllProfilesCheck = $window.FindName("AllProfilesCheck")
+$ProgressBar = $window.FindName("ProgressBar")
+$ProgressText = $window.FindName("ProgressText")
+$StatusBarText = $window.FindName("StatusBarText")
+$StatusText = $window.FindName("StatusText")
+
+# Set default destination
+$DestTextBox.Text = Get-BackupDestination -CustomDestination "" -Config $Config
+
+# ---------------------------------------------------------------------------
+# HELPER FUNCTIONS
+# ---------------------------------------------------------------------------
+function Update-StatusBar($message, $color = "#FFA6E3A1") {
+    $StatusBarText.Text = $message
+    $StatusBarText.Foreground = [System.Windows.Media.Brushes]::new() | Out-Null
+    $StatusBarText.Foreground = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromString($color))
+    $StatusText.Text = $message
+    $StatusText.Foreground = [System.Windows.Media.SolidColorBrush]::new([System.Windows.Media.Color]::FromString($color))
+}
+
+function Set-Progress($value, $text, $visible = $true) {
+    $ProgressBar.Dispatcher.Invoke([action]{
+        $ProgressBar.Value = $value
+        $ProgressBar.Visibility = if ($visible) { 'Visible' } else { 'Collapsed' }
+        $ProgressText.Text = $text
+        $ProgressText.Visibility = if ($visible) { 'Visible' } else { 'Collapsed' }
+    })
+}
+
+function Update-BrowserDetails($browser) {
+    if (-not $browser) {
+        $DetailName.Text = "Select a browser..."
+        $DetailType.Text = ""
+        $DetailEngine.Text = ""
+        $DetailDetect.Text = ""
+        $DetailVersion.Text = ""
+        $DetailProcess.Text = ""
+        $DetailExe.Text = ""
+        $DetailProfileRoot.Text = ""
+        $DetailProfilePath.Text = ""
+        $NoProfileText.Visibility = 'Visible'
+        $ProfileList.Visibility = 'Collapsed'
+        $BackupBtn.IsEnabled = $false
+        $RestoreBtn.IsEnabled = $false
+        return
     }
-    $txtLog.Dispatcher.Invoke([action]{
-        $txtLog.Text += "[$timestamp] $prefix $Message`r`n"
-        $txtLog.ScrollToEnd()
-    })
+
+    $DetailName.Text = $browser.Name
+    $DetailType.Text = $browser.Type
+    $DetailEngine.Text = $browser.EngineFamily
+    $DetailDetect.Text = $browser.DetectStrategy
+    $DetailVersion.Text = $browser.Version
+    $DetailProcess.Text = $browser.ProcessName
+    $DetailExe.Text = if ($browser.ExePath) { $browser.ExePath } else { "Not found" }
+    $DetailProfileRoot.Text = if ($browser.ProfileRoot) { $browser.ProfileRoot } else { "N/A" }
+    $DetailProfilePath.Text = $browser.ProfilePath
+
+    $NoProfileText.Visibility = 'Collapsed'
+    $ProfileList.Visibility = 'Visible'
+    $BackupBtn.IsEnabled = $true
+    $RestoreBtn.IsEnabled = $true
+
+    # Load profiles
+    $profiles = @(Get-BrowserProfiles -Browser $browser)
+    $ProfileList.ItemsSource = $profiles
 }
 
-function Set-Progress {
-    param([int]$Percent, [string]$Text = '')
-    $progressBar.Dispatcher.Invoke([action]{
-        $progressBar.Value = [math]::Max(0, [math]::Min(100, $Percent))
-        if ($Text) { $txtProgress.Text = $Text }
-    })
-}
-
-function Set-Status {
-    param([string]$Text, [string]$Color = 'SecondaryColor')
-    $txtStatus.Dispatcher.Invoke([action]{
-        $txtStatus.Text = $Text
-        if ($Color) { $txtStatus.Foreground = $window.TryFindResource($Color) }
-    })
-}
-
-function Set-Running {
-    param([bool]$Running)
-    $script:jobRunning = $Running
-    $window.Dispatcher.Invoke([action]{
-        $btnAction.IsEnabled = -not $Running
-        $btnCancel.Visibility = if ($Running) { 'Visible' } else { 'Collapsed' }
-        $btnRefresh.IsEnabled = -not $Running
-        $lstBrowsers.IsEnabled = -not $Running
-        $radBackup.IsEnabled = -not $Running
-        $radRestore.IsEnabled = -not $Running
-    })
-}
-
-# ---------- Browser List ----------
 function Refresh-BrowserList {
-    $lstBrowsers.Dispatcher.Invoke([action]{ $lstBrowsers.Items.Clear() })
-    Write-GUI 'Detecting installed browsers...'
-
-    try {
-        $browsers = @(Get-InstalledBrowsers -Config $script:config)
-        foreach ($browser in $browsers) {
-            $profiles = @(Get-BrowserProfiles -Browser $browser)
-            $totalSize = ($profiles | Measure-Object -Property SizeMB -Sum -ErrorAction SilentlyContinue).Sum
-            if ($null -eq $totalSize) { $totalSize = 0 }
-
-            $item = [PSCustomObject]@{
-                Browser           = $browser
-                Name              = $browser.Name
-                ProfileCount      = $profiles.Count
-                ProfileCountLabel = "$($profiles.Count) profiles - $([math]::Round($totalSize, 1)) MB"
-                SizeMB            = [math]::Round($totalSize, 2)
-                Profiles          = $profiles
-            }
-            $lstBrowsers.Dispatcher.Invoke([action]{ $lstBrowsers.Items.Add($item) | Out-Null })
-        }
-        Write-GUI "Found $($browsers.Count) browser(s)" 'OK'
-    } catch {
-        Write-GUI "Detection failed: $_" 'ERROR'
-    }
-    Update-ModeUI
-}
-
-function Update-ModeUI {
-    $isBackup = $radBackup.IsChecked
-    $window.Dispatcher.Invoke([action]{
-        $btnAction.Content = if ($isBackup) { 'Start Backup' } else { 'Start Restore' }
-    })
-}
-
-# ---------- Selection Helpers ----------
-function Select-All-Browsers {
-    $selectAll = $chkSelectAll.IsChecked
-    $window.Dispatcher.Invoke([action]{
-        if ($selectAll) {
-            for ($i = 0; $i -lt $lstBrowsers.Items.Count; $i++) {
-                $lstBrowsers.SelectedItems.Add($lstBrowsers.Items[$i]) | Out-Null
-            }
-        } else {
-            $lstBrowsers.SelectedItems.Clear()
-        }
-    })
-}
-
-function Browse-Destination {
-    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dialog.Description = 'Select backup destination'
-    $dialog.SelectedPath = $txtDestination.Text
-    $dialog.ShowNewFolderButton = $true
-
-    $result = $dialog.ShowDialog()
-    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-        $window.Dispatcher.Invoke([action]{ $txtDestination.Text = $dialog.SelectedPath })
+    Update-StatusBar "Scanning for browsers..." "#FF89B4FA"
+    $script:browsers = @(Get-InstalledBrowsers -Config $Config)
+    
+    # Bind to ListBox
+    $BrowserList.ItemsSource = $script:browsers
+    
+    if ($script:browsers.Count -eq 0) {
+        Update-StatusBar "No browsers found" "#FFF38BA8"
+    } else {
+        Update-StatusBar ("Found {0} browser(s)" -f $script:browsers.Count) "#FFA6E3A1"
     }
 }
 
-# ---------- Action Dispatch ----------
-function Invoke-SelectedAction {
-    $selected = @()
-    $window.Dispatcher.Invoke([action]{ $selected = @($lstBrowsers.SelectedItems) })
+# ---------------------------------------------------------------------------
+# EVENT HANDLERS
+# ---------------------------------------------------------------------------
 
+# Refresh button
+$RefreshBtn.Add_Click({
+    Refresh-BrowserList
+    Update-BrowserDetails $null
+})
+
+# Select All
+$SelectAllBtn.Add_Click({
+    $BrowserList.SelectAll()
+})
+
+# Clear All
+$ClearAllBtn.Add_Click({
+    $BrowserList.UnselectAll()
+    Update-BrowserDetails $null
+})
+
+# Browser selection changed
+$BrowserList.Add_SelectionChanged({
+    $selected = $BrowserList.SelectedItems
+    if ($selected.Count -eq 1) {
+        Update-BrowserDetails $selected[0]
+        $script:selectedBrowser = $selected[0]
+    } elseif ($selected.Count -gt 1) {
+        $DetailName.Text = "Multiple browsers selected ({0})" -f $selected.Count
+        $DetailType.Text = ""
+        $DetailEngine.Text = ""
+        $DetailDetect.Text = ""
+        $DetailVersion.Text = ""
+        $DetailProcess.Text = ""
+        $DetailExe.Text = ""
+        $DetailProfileRoot.Text = ""
+        $DetailProfilePath.Text = ""
+        $NoProfileText.Visibility = 'Visible'
+        $ProfileList.Visibility = 'Collapsed'
+        $BackupBtn.IsEnabled = $true
+        $RestoreBtn.IsEnabled = $true
+        $script:selectedBrowser = $selected
+    } else {
+        Update-BrowserDetails $null
+        $script:selectedBrowser = $null
+    }
+})
+
+# Backup button
+$BackupBtn.Add_Click({
+    $selected = $BrowserList.SelectedItems
     if ($selected.Count -eq 0) {
-        [System.Windows.MessageBox]::Show('Please select at least one browser.', 'No Selection', 'OK', 'Warning')
+        [System.Windows.MessageBox]::Show("Please select at least one browser.", "No Selection", 'OK', 'Warning')
         return
     }
 
-    $destination = $txtDestination.Text
-    if (-not $destination -or -not (Test-Path -LiteralPath $destination)) {
-        [System.Windows.MessageBox]::Show('Please select a valid destination folder.', 'Invalid Destination', 'OK', 'Warning')
+    $dest = $DestTextBox.Text
+    if ([string]::IsNullOrWhiteSpace($dest)) {
+        [System.Windows.MessageBox]::Show("Please specify a backup destination.", "Missing Destination", 'OK', 'Warning')
         return
     }
 
-    $isBackup = $radBackup.IsChecked
-    Set-Running $true
-    $script:cancelRequested = $false
-    Set-Progress 0 ''
-    Set-Status 'Processing...' 'PrimaryColor'
+    if (-not (Test-Path -LiteralPath $dest)) {
+        try { New-Item -ItemType Directory -Path $dest -Force | Out-Null }
+        catch {
+            [System.Windows.MessageBox]::Show("Cannot create destination: $_", "Error", 'OK', 'Error')
+            return
+        }
+    }
 
-    $action = if ($isBackup) { 'Backup' } else { 'Restore' }
-    Write-GUI "Starting $action of $($selected.Count) browser(s)..."
+    $excludes = if ($ExcludeCacheCheck.IsChecked) { @(Get-ExcludedDirectories -Config $config) } else { @() }
+    $force = $ForceCheck.IsChecked
+    $allProfiles = $AllProfilesCheck.IsChecked
 
-    # Runspace setup
-    $script:runspace = [runspacefactory]::CreateRunspace()
-    $script:runspace.ApartmentState = 'STA'
-    $script:runspace.ThreadOptions = 'ReuseThread'
-    $script:runspace.Open()
+    # Run backup in background
+    $BackupBtn.IsEnabled = $false
+    Set-Progress 0 "Starting backup..." $true
 
-    # Share variables
-    $script:runspace.SessionStateProxy.SetVariable('selected', $selected)
-    $script:runspace.SessionStateProxy.SetVariable('destination', $destination)
-    $script:runspace.SessionStateProxy.SetVariable('isBackup', $isBackup)
-    $script:runspace.SessionStateProxy.SetVariable('config', $script:config)
-    $script:runspace.SessionStateProxy.SetVariable('logFile', $script:logFile)
-    $script:runspace.SessionStateProxy.SetVariable('cancelRef', [ref]$script:cancelRequested)
-    $script:runspace.SessionStateProxy.SetVariable('ModuleRoot', $script:ModuleRoot)
-
-    $script:psInstance = [powershell]::Create()
-    $script:psInstance.Runspace = $script:runspace
-
-    [void]$script:psInstance.AddScript({
-        # Import modules inside the runspace
-        Import-Module (Join-Path $using:ModuleRoot 'Modules\Config.psm1')          -Force -DisableNameChecking
-        Import-Module (Join-Path $using:ModuleRoot 'Modules\BrowserDetection.psm1') -Force -DisableNameChecking
-        Import-Module (Join-Path $using:ModuleRoot 'Modules\Logging.psm1')          -Force -DisableNameChecking
-        Import-Module (Join-Path $using:ModuleRoot 'Modules\BackupEngine.psm1')     -Force -DisableNameChecking
-        Import-Module (Join-Path $using:ModuleRoot 'Modules\RestoreEngine.psm1')    -Force -DisableNameChecking
-
-        $totalOps = 0
-        foreach ($item in $selected) { $totalOps += $item.Profiles.Count }
-        $completed = 0
-        $errors = 0
+    $job = Start-Job -ScriptBlock {
+        param($SelectedBrowsers, $Dest, $Excludes, $Force, $AllProfiles, $ConfigPath, $LogFile)
+        Import-Module (Join-Path (Split-Path $ConfigPath) 'Modules\Config.psm1') -Force -DisableNameChecking
+        Import-Module (Join-Path (Split-Path $ConfigPath) 'Modules\BrowserDetection.psm1') -Force -DisableNameChecking
+        Import-Module (Join-Path (Split-Path $ConfigPath) 'Modules\Logging.psm1') -Force -DisableNameChecking
+        Import-Module (Join-Path (Split-Path $ConfigPath) 'Modules\BackupEngine.psm1') -Force -DisableNameChecking
+        
+        $config = Get-BrowserConfig -ConfigPath $ConfigPath
         $results = @()
-
-        foreach ($item in $selected) {
-            if ($cancelRef.Value) { break }
-            $browser = $item.Browser
-            $profiles = $item.Profiles
-
-            foreach ($profile in $profiles) {
-                if ($cancelRef.Value) { break }
-                $completed++
-
-                try {
-                    if ($isBackup) {
-                        $result = New-BrowserBackup -Browser $browser -ProfileName $profile.Name `
-                            -Destination $destination -ExcludeDirs $config.defaults.excludeFromBackup `
-                            -Force -LogFile $logFile `
-                            -RobocopyRetries $config.defaults.robocopyRetries `
-                            -RobocopyWait $config.defaults.robocopyWait `
-                            -CriticalFiles $config.defaults.checksumCriticalFiles
-                        if (-not $result.Success) { $errors++ }
-                        $results += $result
-                    } else {
-                        # Restore: need a backup source folder from user — not implemented in multi-select yet.
-                        # For now, skip with warning.
-                        Write-Log -Message "Restore not yet supported in multi-select GUI mode" -Level 'WARN' -LogFile $logFile
-                        $errors++
-                    }
-                } catch {
-                    $errors++
-                    Write-Log -Message "Operation error: $_" -Level 'ERROR' -LogFile $logFile
+        
+        foreach ($browser in $SelectedBrowsers) {
+            if ($AllProfiles) {
+                $profiles = @(Get-BrowserProfiles -Browser $browser)
+                foreach ($p in $profiles) {
+                    $result = New-BrowserBackup -Browser $browser -ProfileName $p.Name `
+                        -Destination $Dest -ExcludeDirs $Excludes -Force:$Force `
+                        -LogFile $LogFile -RobocopyRetries $config.defaults.robocopyRetries `
+                        -RobocopyWait $config.defaults.robocopyWait -CriticalFiles $config.defaults.checksumCriticalFiles
+                    $results += @{ Browser = $browser.Name; Profile = $p.Name; Result = $result }
                 }
+            } else {
+                $profiles = @($browser | Where-Object { $_.Name -in ($selected | ForEach-Object { $_.Name }) })
+                # Simplified: just backup the default profile for multi-select
+                $result = New-BrowserBackup -Browser $browser -ProfileName "Default" `
+                    -Destination $Dest -ExcludeDirs $Excludes -Force:$Force `
+                    -LogFile $LogFile -RobocopyRetries $config.defaults.robocopyRetries `
+                    -RobocopyWait $config.defaults.robocopyWait -CriticalFiles $config.defaults.checksumCriticalFiles
+                $results += @{ Browser = $browser.Name; Profile = "Default"; Result = $result }
             }
         }
+        return $results
+    } -ArgumentList @($selected, $dest, $excludes, $force, $allProfiles, (Join-Path $rootDir 'Config\browsers.json'), $LogFile)
 
-        return @{ Completed = $completed; Errors = $errors; Total = $totalOps; Results = $results }
-    })
-
-    $handle = $script:psInstance.BeginInvoke()
-
-    # UI polling timer
-    $script:dispatcherTimer = New-Object System.Windows.Threading.DispatcherTimer
-    $script:dispatcherTimer.Interval = [TimeSpan]::FromMilliseconds(250)
-    $script:dispatcherTimer.Add_Tick({
-        if ($handle.IsCompleted) {
-            $script:dispatcherTimer.Stop()
-            try {
-                $result = $script:psInstance.EndInvoke($handle)
-            } catch {
-                $result = @{ Errors = 1; Completed = 0; Total = 0 }
-                Write-GUI "Background job failed: $_" 'ERROR'
-            } finally {
-                if ($script:psInstance) { $script:psInstance.Dispose(); $script:psInstance = $null }
-                if ($script:runspace) { $script:runspace.Close(); $script:runspace = $null }
+    # Monitor job
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $timer.Add_Tick({
+        if ($job.State -eq 'Completed') {
+            $timer.Stop()
+            $results = Receive-Job $job
+            $BackupBtn.IsEnabled = $true
+            Set-Progress 0 "" $false
+            
+            $success = 0
+            $total = $results.Count
+            foreach ($r in $results) {
+                if ($r.Result.Success) { $success++ }
             }
+            Update-StatusBar "Backup complete: $success/$total succeeded" "#FFA6E3A1"
+            [System.Windows.MessageBox]::Show(($results | ForEach-Object { 
+                "{0} - {1}: {2}" -f $_.Browser, $_.Profile, (if ($_.Result.Success) { "OK - $($_.Result.Path) ($($_.Result.SizeMB) MB)" } else { "FAILED: $($_.Result.Message)" }) 
+            }) -join "`n"), "Backup Results", 'OK', 'Information')
+        } else {
+            Set-Progress (($job.Id % 100)) "Processing..." $true
+        }
+    })
+    $timer.Start()
+})
 
-            Set-Running $false
-            Set-Progress 100 'Complete'
+# Restore button
+$RestoreBtn.Add_Click({
+    $selected = $BrowserList.SelectedItems
+    if ($selected.Count -ne 1) {
+        [System.Windows.MessageBox]::Show("Please select exactly one browser for restore.", "Selection Required", 'OK', 'Warning')
+        return
+    }
 
-            if ($script:cancelRequested) {
-                Set-Status 'Cancelled' 'WarningColor'
-                Write-GUI 'Operation cancelled by user' 'WARN'
-            } elseif ($result.Errors -gt 0) {
-                Set-Status "Completed with $($result.Errors) error(s)" 'WarningColor'
-                Write-GUI "Completed with $($result.Errors) error(s)" 'WARN'
+    $browser = $selected[0]
+    $profiles = @(Get-BrowserProfiles -Browser $browser)
+    if ($profiles.Count -eq 0) {
+        [System.Windows.MessageBox]::Show("No profiles found for this browser.", "No Profiles", 'OK', 'Warning')
+        return
+    }
+
+    $backupPath = [System.Windows.Forms.FolderBrowserDialog]::new()
+    $backupPath.Description = "Select backup folder to restore from"
+    if ($backupPath.ShowDialog() -ne 'OK') { return }
+
+    $profileName = "Default"
+    if ($profiles.Count -gt 1) {
+        $dialog = [System.Windows.Window]::new()
+        $dialog.Title = "Select Profile"
+        $dialog.SizeToContent = 'WidthAndHeight'
+        $dialog.WindowStartupLocation = 'CenterOwner'
+        $dialog.Owner = $window
+        $dialog.ResizeMode = 'NoResize'
+        
+        $stack = [System.Windows.Controls.StackPanel]::new()
+        $stack.Margin = "20"
+        foreach ($p in $profiles) {
+            $rb = [System.Windows.Controls.RadioButton]::new()
+            $rb.Content = "{0} ({1:F1} MB)" -f $p.Name, $p.SizeMB
+            $rb.GroupName = "ProfileSelect"
+            $rb.Tag = $p.Name
+            $stack.Children.Add($rb)
+        }
+        $btn = [System.Windows.Controls.Button]::new()
+        $btn.Content = "OK"
+        $btn.Width = 80
+        $btn.Margin = "0,12,0,0"
+        $btn.Add_Click({ $dialog.DialogResult = $true; $dialog.Close() })
+        $stack.Children.Add($btn)
+        $dialog.Content = $stack
+        if ($dialog.ShowDialog() -eq $true) {
+            $selectedRb = $stack.Children | Where-Object { $_.IsChecked -eq $true } | Select-Object -First 1
+            if ($selectedRb) { $profileName = $selectedRb.Tag }
+        }
+    }
+
+    Set-Progress 0 "Restoring..." $true
+    $RestoreBtn.IsEnabled = $false
+
+    $job = Start-Job -ScriptBlock {
+        param($Browser, $BackupPath, $ProfileName, $ConfigPath, $LogFile)
+        Import-Module (Join-Path (Split-Path $ConfigPath) 'Modules\Config.psm1') -Force -DisableNameChecking
+        Import-Module (Join-Path (Split-Path $ConfigPath) 'Modules\BrowserDetection.psm1') -Force -DisableNameChecking
+        Import-Module (Join-Path (Split-Path $ConfigPath) 'Modules\Logging.psm1') -Force -DisableNameChecking
+        Import-Module (Join-Path (Split-Path $ConfigPath) 'Modules\RestoreEngine.psm1') -Force -DisableNameChecking
+        
+        $config = Get-BrowserConfig -ConfigPath $ConfigPath
+        $result = Restore-BrowserProfile -Browser $Browser -BackupPath $BackupPath `
+            -ProfileName $ProfileName -Force:$true -LogFile $LogFile `
+            -RobocopyRetries $config.defaults.robocopyRetries -RobocopyWait $config.defaults.robocopyWait
+        return $result
+    } -ArgumentList @($browser, $backupPath.SelectedPath, $profileName, (Join-Path $rootDir 'Config\browsers.json'), $LogFile)
+
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $timer.Add_Tick({
+        if ($job.State -eq 'Completed') {
+            $timer.Stop()
+            $result = Receive-Job $job
+            $RestoreBtn.IsEnabled = $true
+            Set-Progress 0 "" $false
+            
+            if ($result.Success) {
+                Update-StatusBar "Restore completed successfully" "#FFA6E3A1"
+                [System.Windows.MessageBox]::Show("Restore completed successfully!`nRollback: $($result.Rollback)", "Success", 'OK', 'Information')
             } else {
-                Set-Status "All operations completed successfully" 'SecondaryColor'
-                Write-GUI "All $($result.Completed) operation(s) completed successfully" 'OK'
+                Update-StatusBar "Restore failed: $($result.Message)" "#FFF38BA8"
+                [System.Windows.MessageBox]::Show("Restore failed: $($result.Message)", "Error", 'OK', 'Error')
             }
         } else {
-            $window.Dispatcher.Invoke([action]{ $txtProgress.Text = 'Working...' })
+            Set-Progress (($job.Id % 100)) "Restoring..." $true
         }
     })
-    $script:dispatcherTimer.Start()
-}
+    $timer.Start()
+})
 
-# ---------- Event Handlers ----------
-$btnAction.Add_Click({ Invoke-SelectedAction })
-$btnCancel.Add_Click({ 
-    if ($script:jobRunning) { 
-        $script:cancelRequested = $true
-        Write-GUI 'Cancelling...' 'WARN'
+# List button
+$ListBtn.Add_Click({
+    $allBrowsers = @(Get-InstalledBrowsers -Config $Config)
+    $msg = "Installed Browsers:`n`n"
+    foreach ($b in $allBrowsers) {
+        $running = if (Test-BrowserRunning -Browser $b) { " [RUNNING]" } else { "" }
+        $msg += "{0} v{1}{2}`n  Type: {3}`n  Profile: {4}`n  Exe: {5}`n`n" -f $b.Name, $b.Version, $running, $b.Type, $b.ProfilePath, (if ($b.ExePath) { $b.ExePath } else { "Not found" })
+    }
+    if ($allBrowsers.Count -eq 0) { $msg = "No browsers found." }
+    [System.Windows.MessageBox]::Show($msg, "All Browsers", 'OK', 'Information')
+})
+
+# Browse destination
+$BrowseDestBtn.Add_Click({
+    $dialog = [System.Windows.Forms.FolderBrowserDialog]::new()
+    $dialog.Description = "Select backup destination folder"
+    $dialog.SelectedPath = $DestTextBox.Text
+    if ($dialog.ShowDialog() -eq 'OK') {
+        $DestTextBox.Text = $dialog.SelectedPath
     }
 })
-$btnRefresh.Add_Click({ Refresh-BrowserList })
-$btnBrowse.Add_Click({ Browse-Destination })
-$chkSelectAll.Add_Click({ Select-All-Browsers })
-$radBackup.Add_Click({ Update-ModeUI })
-$radRestore.Add_Click({ Update-ModeUI })
 
-# Initial load
-Refresh-BrowserList
-
-# Cleanup on window close
-$window.Add_Closed({
-    if ($script:dispatcherTimer) { $script:dispatcherTimer.Stop() }
-    if ($script:psInstance) { try { $script:psInstance.Dispose() } catch { } }
-    if ($script:runspace) { try { $script:runspace.Close() } catch { } }
+# Window loaded
+$window.Add_Loaded({
+    Refresh-BrowserList
+    Update-BrowserDetails $null
 })
 
+# ---------------------------------------------------------------------------
+# RUN THE WINDOW
+# ---------------------------------------------------------------------------
 $window.ShowDialog() | Out-Null

@@ -3,12 +3,14 @@ import os
 import subprocess
 import hashlib
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 from core.config_manager import config
 from core.logger import get_logger
 
 log = get_logger()
+
 
 class BackupEngine:
     @staticmethod
@@ -21,6 +23,12 @@ class BackupEngine:
             return sha256_hash.hexdigest()
         except Exception as e:
             return f"ERROR: {e}"
+
+    @staticmethod
+    def _compute_selection_hash(browser_name, profile_name, timestamp):
+        """Compute a SHA256 hash of the selection for resume integrity."""
+        data = f"{browser_name}|{profile_name}|{timestamp}".encode("utf-8")
+        return hashlib.sha256(data).hexdigest()[:16]
 
     @staticmethod
     def create_manifest(backup_path, browser, profile_name, robocopy_exit_code, log_file):
@@ -41,13 +49,44 @@ class BackupEngine:
         files = [f for f in Path(backup_path).rglob("*") if f.is_file()]
         total_size = sum(f.stat().st_size for f in files)
 
+        # Preflight data for resume integrity
+        timestamp = datetime.now().isoformat()
+        selection_hash = BackupEngine._compute_selection_hash(
+            browser.get("name", "Unknown"),
+            profile_name,
+            timestamp
+        )
+
+        # Check disk space
+        try:
+            dest_disk = Path(backup_path).anchor or "."
+            total, used, free = shutil.disk_usage(dest_disk)
+            disk_free_gb = round(free / (1024**3), 2)
+        except Exception:
+            disk_free_gb = None
+
+        # Check if browser was running
+        process_name = browser.get("process_name", "")
+        is_running = False
+        try:
+            if process_name:
+                result = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {process_name}.exe"], capture_output=True, text=True, timeout=10)
+                is_running = process_name.lower() in result.stdout.lower()
+        except Exception:
+            pass
+
         manifest = {
-            "version": "2.1.0",
-            "timestamp": datetime.now().isoformat(),
+            "version": "2.1.1",
+            "vTag": "2.1.1",
+            "timestamp": timestamp,
+            "selectionHash": selection_hash,
             "browser": {
                 "name": browser["name"],
                 "type": browser["type"],
-                "version": browser["version"]
+                "version": browser["version"],
+                "rawName": browser.get("raw_name", browser["name"]),
+                "engineFamily": browser.get("engineFamily", browser["type"]),
+                "detectStrategy": browser.get("detectStrategy", "localState")
             },
             "profile": profile_name,
             "source": browser["profile_path"],
@@ -66,6 +105,11 @@ class BackupEngine:
                 "name": os.environ.get("COMPUTERNAME", "Unknown"),
                 "user": os.environ.get("USERNAME", "Unknown"),
                 "os": os.name
+            },
+            "preflight": {
+                "browserRunning": is_running,
+                "diskFreeGB": disk_free_gb,
+                "processName": process_name
             }
         }
 
@@ -73,7 +117,6 @@ class BackupEngine:
             json.dump(manifest, f, indent=4)
 
         return str(manifest_path)
-
     @classmethod
     def run_backup(cls, browser, profile, destination, exclude_dirs=None, log_file=None, force=False):
         # 1. Check if browser is running

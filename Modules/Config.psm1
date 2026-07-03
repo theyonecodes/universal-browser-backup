@@ -153,6 +153,65 @@ function Get-BrowserConfig {
                 $critical = @($parsed.defaults.checksumCriticalFiles | ForEach-Object { [string]$_ })
             }
 
+            # Determine format: new "browsers" array vs legacy chromiumPaths dict.
+            # Use PSObject.Properties to avoid strict-mode PropertyNotFoundException.
+            $hasNewFormat    = $null -ne ($parsed.PSObject.Properties['browsers'])
+            $hasLegacyFormat = $null -ne ($parsed.PSObject.Properties['chromiumPaths'])
+
+            # If the new "browsers" array format is present, validate and build
+            # a config that also exposes chromiumPaths/geckoPaths for backward compat.
+            if ($hasNewFormat -and -not $hasLegacyFormat) {
+                $browsersList = @()
+                foreach ($b in $parsed.browsers) {
+                    $browserEntry = @{
+                        name             = [string]$b.name
+                        alias           = [string]$b.alias
+                        type             = [string]$b.type
+                        engineFamily     = [string]$b.engineFamily
+                        icon             = [string]$b.icon
+                        processName      = [string]$b.processName
+                        profileRoot      = if ($b.profileRoot) { [string]$b.profileRoot } else { $null }
+                        detectStrategy   = [string]$b.detectStrategy
+                        localPath        = [string]$b.localPath
+                        programFilesPath = if ($b.programFilesPath) { [string]$b.programFilesPath } else { $null }
+                    }
+                    $browsersList += $browserEntry
+                }
+
+                $legacyChromium = @()
+                $legacyGeckoPaths = @{ appData = $null; localAppData = $null }
+
+                foreach ($b in $browsersList) {
+                    if ($b.engineFamily -eq 'Chromium') {
+                        if ($b.localPath) { $legacyChromium += $b.localPath }
+                    } elseif ($b.engineFamily -eq 'Gecko' -and $b.localPath) {
+                        if (-not $legacyGeckoPaths.appData) {
+                            $legacyGeckoPaths.appData = $b.localPath
+                            $legacyGeckoPaths.localAppData = $b.localPath
+                        }
+                    }
+                }
+
+                $config = @{
+                    version        = [string]$parsed.version
+                    defaults       = @{
+                        backupDestination    = if ($parsed.defaults.backupDestination) { [string]$parsed.defaults.backupDestination } else { "$env:USERPROFILE\Desktop" }
+                        excludeFromBackup    = $exclude
+                        robocopyRetries       = [int]$parsed.defaults.robocopyRetries
+                        robocopyWait          = [int]$parsed.defaults.robocopyWait
+                        maxLogFiles           = [int]$parsed.defaults.maxLogFiles
+                        checksumCriticalFiles = $critical
+                    }
+                    chromiumPaths  = @{ local = $legacyChromium; programFiles = @() }
+                    geckoPaths     = $legacyGeckoPaths
+                    processNames   = $processNames
+                    browsers       = $browsersList
+                }
+                Write-Verbose "Loaded config version: $($config.version) (browsers array format)"
+                return $config
+            }
+
+            # Legacy JSON format with explicit chromiumPaths / geckoPaths
             $config = @{
                 version        = [string]$parsed.version
                 defaults       = @{
@@ -173,8 +232,6 @@ function Get-BrowserConfig {
                 }
                 processNames   = $processNames
             }
-            Write-Verbose "Loaded config version: $($config.version)"
-            return $config
         }
         catch {
             Write-Warning "Failed to parse config at '$ConfigPath': $_ . Falling back to defaults."

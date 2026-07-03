@@ -1,4 +1,4 @@
-# BrowserDetection.psm1 — discovers installed Chromium and Gecko browsers + their profiles.
+# BrowserDetection.psm1 - discovers installed browsers + their profiles using browsers.json v2.1.1
 
 Set-StrictMode -Version Latest
 
@@ -21,13 +21,27 @@ function Resolve-Executable {
                     Where-Object { $_.Name -notmatch 'uninstall|setup|installer|update|helper|crashpad' }
             } catch { continue }
             if ($candidates.Count -gt 0) {
-                # Pick the one with the newest LastWriteTime as a deterministic tiebreaker.
                 $candidates = $candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
                 return $candidates.FullName
             }
         }
     }
     return $null
+}
+
+function Get-ProcessNameForBrowser {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [string]$BrowserAlias,
+        [hashtable]$Config
+    )
+
+    $processNames = $Config.processNames
+    if ($processNames -and $processNames.ContainsKey($BrowserAlias)) {
+        return $processNames[$BrowserAlias]
+    }
+    return $BrowserAlias.ToLowerInvariant()
 }
 
 function Get-ChromiumBrowsers {
@@ -43,13 +57,23 @@ function Get-ChromiumBrowsers {
     $programFiles = $env:ProgramFiles
     $programFilesX86 = ${env:ProgramFiles(x86)}
 
-    foreach ($browserPath in $Config.chromiumPaths.local) {
+    $browserDefs = $Config.browsers | Where-Object { $_.type -eq "Chromium" }
+
+    foreach ($browserDef in $browserDefs) {
         if ([string]::IsNullOrWhiteSpace($localAppData)) { continue }
-        $basePath = Join-Path $localAppData $browserPath
+
+        $localPath = $browserDef.localPath
+        if (-not $localPath) { continue }
+
+        $basePath = Join-Path $localAppData $localPath
         if (-not (Test-Path -LiteralPath $basePath)) { continue }
 
         $userDataPath = $null
-        foreach ($variant in @("User Data", "User Data V2")) {
+        $profileRoot = if ($browserDef.profileRoot) { $browserDef.profileRoot } else { "Default" }
+        $variants = @($profileRoot, "Default", "User Data", "User Data V2", "$profileRoot V2")
+        $variants = $variants | Select-Object -Unique
+
+        foreach ($variant in $variants) {
             $candidate = Join-Path $basePath $variant
             if (Test-Path -LiteralPath $candidate -PathType Container) {
                 $userDataPath = $candidate
@@ -62,13 +86,18 @@ function Get-ChromiumBrowsers {
         $localStatePath = Join-Path $userDataPath "Local State"
         if (-not (Test-Path -LiteralPath $localStatePath -PathType Leaf)) { continue }
 
-        $browserName = ($browserPath -split '\\') | Select-Object -Last 1
-        $safeName = ($browserName -replace '[^a-zA-Z0-9]', '')
+        $safeName = $browserDef.alias
+        if (-not $safeName) { $safeName = ($localPath -split '\\') | Select-Object -Last 1 }
 
         $searchRoots = @($programFiles, $programFilesX86)
-        $exePath = Resolve-Executable -SearchRoots $searchRoots -RelativeDirs ($Config.chromiumPaths.programFiles | ForEach-Object { "$_\Application" })
+        $relativePath = $browserDef.programFilesPath
+        $exePath = $null
+        if ($relativePath) {
+            $exePath = Resolve-Executable -SearchRoots $searchRoots -RelativeDirs @("$relativePath\Application")
+        }
 
-        $processName = Get-ProcessNameForBrowser -BrowserRawName $browserName -Config $Config
+        $processName = Get-ProcessNameForBrowser -BrowserAlias $browserDef.alias -Config $Config
+        if (-not $processName) { $processName = $browserDef.processName }
 
         $version = "Unknown"
         if ($exePath -and (Test-Path -LiteralPath $exePath -PathType Leaf)) {
@@ -78,14 +107,19 @@ function Get-ChromiumBrowsers {
             } catch { $version = "Unknown" }
         }
 
+        $engineFamily = if ($browserDef.engineFamily) { $browserDef.engineFamily } else { "Chromium" }
+
         $browsers.Add([PSCustomObject]@{
-            Name        = if ($safeName) { "$safeName (Chromium)" } else { "$browserName (Chromium)" }
-            Type        = "Chromium"
-            ProfilePath = $userDataPath
-            ExePath     = $exePath
-            ProcessName = $processName
-            Version     = $version
-            RawName     = $browserName
+            Name           = if ($safeName) { "$safeName ($engineFamily)" } else { "$($browserDef.name) (Chromium)" }
+            Type           = "Chromium"
+            EngineFamily   = $engineFamily
+            ProfilePath    = $userDataPath
+            ExePath        = $exePath
+            ProcessName    = $processName
+            Version        = $version
+            RawName        = $safeName
+            Icon           = if ($browserDef.icon) { $browserDef.icon } else { $safeName.ToLowerInvariant() }
+            DetectStrategy = if ($browserDef.detectStrategy) { $browserDef.detectStrategy } else { "localState" }
         })
     }
 
@@ -104,43 +138,65 @@ function Get-GeckoBrowsers {
     $appData = $env:APPDATA
     if ([string]::IsNullOrWhiteSpace($appData)) { return $result.ToArray() }
 
-    $firefoxPath = Join-Path $appData $Config.geckoPaths.appData
-    $profilesIni = Join-Path $firefoxPath "profiles.ini"
-    if (-not (Test-Path -LiteralPath $profilesIni -PathType Leaf)) { return $result.ToArray() }
+    $browserDefs = $Config.browsers | Where-Object { $_.type -eq "Gecko" }
 
-    try {
-        $iniContent = Get-Content -LiteralPath $profilesIni -Raw -ErrorAction Stop
-    } catch {
-        Write-Verbose "Could not read profiles.ini: $_"
-        return $result.ToArray()
-    }
+    foreach ($browserDef in $browserDefs) {
+        $localPath = $browserDef.localPath
+        if (-not $localPath) { continue }
 
-    $hasProfile = $false
-    foreach ($line in ($iniContent -split "`r?`n")) {
-        if ($line -match '^Path=') { $hasProfile = $true; break }
-    }
-    if (-not $hasProfile) { return $result.ToArray() }
+        $firefoxPath = Join-Path $appData $localPath
+        $profilesIni = Join-Path $firefoxPath "profiles.ini"
+        if (-not (Test-Path -LiteralPath $profilesIni -PathType Leaf)) { continue }
 
-    $searchRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
-    $exePath = Resolve-Executable -SearchRoots $searchRoots -RelativeDirs @("Mozilla Firefox")
-
-    $version = "Unknown"
-    if ($exePath -and (Test-Path -LiteralPath $exePath -PathType Leaf)) {
         try {
-            $v = (Get-Item -LiteralPath $exePath).VersionInfo.ProductVersion
-            if ($v) { $version = $v }
-        } catch { }
-    }
+            $iniContent = Get-Content -LiteralPath $profilesIni -Raw -ErrorAction Stop
+        } catch {
+            Write-Verbose "Could not read profiles.ini: $_"
+            continue
+        }
 
-    $result.Add([PSCustomObject]@{
-        Name        = "Firefox (Gecko)"
-        Type        = "Gecko"
-        ProfilePath = $firefoxPath
-        ExePath     = $exePath
-        ProcessName = "firefox"
-        Version     = $version
-        RawName     = "Firefox"
-    })
+        $hasProfile = $false
+        foreach ($line in ($iniContent -split "`r?`n")) {
+            if ($line -match '^Path=') { $hasProfile = $true; break }
+        }
+        if (-not $hasProfile) { continue }
+
+        $searchRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
+        $relativePath = $browserDef.programFilesPath
+        $exePath = $null
+        if ($relativePath) {
+            $exePath = Resolve-Executable -SearchRoots $searchRoots -RelativeDirs @($relativePath)
+        }
+
+        $safeName = $browserDef.alias
+        if (-not $safeName) { $safeName = $browserDef.name }
+
+        $processName = Get-ProcessNameForBrowser -BrowserAlias $browserDef.alias -Config $Config
+        if (-not $processName) { $processName = $browserDef.processName }
+
+        $version = "Unknown"
+        if ($exePath -and (Test-Path -LiteralPath $exePath -PathType Leaf)) {
+            try {
+                $v = (Get-Item -LiteralPath $exePath).VersionInfo.ProductVersion
+                if ($v) { $version = $v }
+            } catch { }
+        }
+
+        $engineFamily = if ($browserDef.engineFamily) { $browserDef.engineFamily } else { "Firefox" }
+
+        $result.Add([PSCustomObject]@{
+            Name           = "$safeName (Gecko)"
+            Type           = "Gecko"
+            EngineFamily   = $engineFamily
+            ProfilePath    = $firefoxPath
+            ExePath        = $exePath
+            ProcessName    = $processName
+            Version        = $version
+            RawName        = $safeName
+            Icon           = if ($browserDef.icon) { $browserDef.icon } else { $safeName.ToLowerInvariant() }
+            DetectStrategy = if ($browserDef.detectStrategy) { $browserDef.detectStrategy } else { "profilesIni" }
+        })
+    }
 
     return $result.ToArray()
 }
@@ -158,7 +214,6 @@ function Get-InstalledBrowsers {
 
     $all = @($chromium + $gecko)
 
-    # Deduplicate by (Type, ProfilePath), keep order, prefer the one with an ExePath.
     $seen = @{}
     $deduped = [System.Collections.Generic.List[PSCustomObject]]::new()
     foreach ($b in $all) {
@@ -168,7 +223,6 @@ function Get-InstalledBrowsers {
             $deduped.Add($b)
         }
         elseif ($b.ExePath -and -not $seen["__preferred__:$key"]) {
-            # Replace the prior entry with this richer one.
             $idx = $deduped.FindIndex({ param($x) "$($x.Type)|$($x.ProfilePath.ToString().ToLowerInvariant())" -eq $key })
             if ($idx -ge 0) { $deduped[$idx] = $b }
             $seen["__preferred__:$key"] = $true
@@ -186,14 +240,21 @@ function Get-BrowserProfiles {
     )
 
     $profiles = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $btype = $Browser.Type
+    $detectStrategy = $Browser.DetectStrategy
 
-    if ($Browser.Type -eq "Chromium") {
+    if ($btype -eq "Chromium" -or $detectStrategy -eq "localState") {
         $userDataPath = $Browser.ProfilePath
         if (Test-Path -LiteralPath $userDataPath -PathType Container) {
             $dirs = @()
             try {
                 $dirs = Get-ChildItem -LiteralPath $userDataPath -Directory -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -eq 'Default' -or $_.Name -match '^Profile \d+$' }
+                    Where-Object {
+                        $_.Name -eq 'Default' -or
+                        $_.Name -match '^Profile \d+$' -or
+                        $_.Name -match '-release$' -or
+                        $_.Name -match '-beta$'
+                    }
             } catch { }
 
             foreach ($dir in $dirs) {
@@ -212,7 +273,7 @@ function Get-BrowserProfiles {
             }
         }
     }
-    elseif ($Browser.Type -eq "Gecko") {
+    elseif ($btype -eq "Gecko" -or $detectStrategy -eq "profilesIni") {
         $firefoxPath = $Browser.ProfilePath
         $profilesIni = Join-Path $firefoxPath "profiles.ini"
         if (Test-Path -LiteralPath $profilesIni -PathType Leaf) {
@@ -231,7 +292,6 @@ function Get-BrowserProfiles {
             foreach ($line in ($iniContent -split "`r?`n")) {
                 $line = $line.Trim()
                 if ($line -match '^\[(Profile\d*)\]$') {
-                    # Close out the previous profile entry.
                     if ($currentSection -and $profilePath) {
                         $fullPath = if ([System.IO.Path]::IsPathRooted($profilePath)) {
                             $profilePath
@@ -251,9 +311,6 @@ function Get-BrowserProfiles {
                                 SizeMB    = [math]::Round($size / 1MB, 2)
                                 IsDefault = ($currentSection -eq "Profile0")
                             })
-                            if ($currentSection -eq "Profile0" -and -not $defaultEncodedPath) {
-                                $defaultEncodedPath = $profilePath
-                            }
                         }
                     }
                     $currentSection = $matches[1]
@@ -267,11 +324,9 @@ function Get-BrowserProfiles {
                     $profilePath = $matches[1]
                 }
                 elseif ($line -match '^Default=(.+)$' -and $currentSection -eq "Profile0") {
-                    # captured but not needed beyond validation
                 }
             }
 
-            # Flush last entry.
             if ($currentSection -and $profilePath) {
                 $fullPath = if ([System.IO.Path]::IsPathRooted($profilePath)) {
                     $profilePath
