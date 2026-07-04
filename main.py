@@ -6,15 +6,24 @@ import platform
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QComboBox, QPushButton, QLabel, QFileDialog,
-    QLineEdit, QTextEdit, QMessageBox, QProgressBar, QCheckBox,
-    QListWidget, QListWidgetItem, QGroupBox, QGridLayout, QScrollArea,
-    QSpinBox, QSplitter, QFrame, QStatusBar, QFormLayout
-)
-from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
-from PySide6.QtGui import QFont, QIcon
+try:
+    from PySide6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QTabWidget, QComboBox, QPushButton, QLabel, QFileDialog,
+        QLineEdit, QTextEdit, QMessageBox, QProgressBar, QCheckBox,
+        QListWidget, QListWidgetItem, QGroupBox, QGridLayout, QScrollArea,
+        QSpinBox, QSplitter, QFrame, QStatusBar, QFormLayout,
+        QTableWidget, QTableWidgetItem, QHeaderView
+    )
+    from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
+    from PySide6.QtGui import QFont, QIcon
+except ImportError:
+    import sys
+    print("ERROR: Required dependencies (PySide6) are missing.")
+    print("Please run 'setup.bat' to install all necessary packages.")
+    if sys.platform == "win32":
+        input("\nPress Enter to exit...")
+    sys.exit(1)
 
 from core.detection import BrowserDetection
 from core.config_manager import config_manager, config
@@ -25,18 +34,24 @@ from core.logger import get_logger, get_log_path
 log = get_logger()
 log_path = get_log_path()
 
+# Ensure we run from the script's directory (critical for double-click execution)
+script_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(script_dir)
+
 
 class BrowserListItem(QWidget):
     """Custom widget for browser list with checkbox and info."""
-    def __init__(self, browser_data, parent=None):
+    def __init__(self, browser_data, on_changed=None, parent=None):
         super().__init__(parent)
         self.browser_data = browser_data
+        self.on_changed = on_changed
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(8)
 
         self.checkbox = QCheckBox()
         self.checkbox.setChecked(True)
+        self.checkbox.toggled.connect(self._on_toggled)
         layout.addWidget(self.checkbox)
 
         name_label = QLabel(f"<b>{browser_data['name']}</b>")
@@ -66,6 +81,10 @@ class BrowserListItem(QWidget):
 
     def set_checked(self, checked):
         self.checkbox.setChecked(checked)
+
+    def _on_toggled(self, checked):
+        if self.on_changed:
+            self.on_changed()
 
 
 class ProfileListItem(QWidget):
@@ -279,10 +298,29 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.profile_count_label)
         profile_layout.addLayout(toolbar)
 
-        self.profile_list = QListWidget()
-        self.profile_list.setAlternatingRowColors(True)
-        self.profile_list.setMinimumHeight(160)
-        profile_layout.addWidget(self.profile_list)
+        # Profile Table
+        self.profile_table = QTableWidget()
+        self.profile_table.setAlternatingRowColors(True)
+        self.profile_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.profile_table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.profile_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.profile_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.profile_table.setColumnCount(8)
+        self.profile_table.setHorizontalHeaderLabels([
+            "✓", "Browser", "Profile", "Display Name", "Email", "Critical Files", "Est. Size", "Default"
+        ])
+        header = self.profile_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.Interactive)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.Interactive)
+        header.setSectionResizeMode(6, QHeaderView.Interactive)
+        header.setSectionResizeMode(7, QHeaderView.Fixed)
+        self.profile_table.setColumnWidth(0, 40)
+        self.profile_table.setColumnWidth(7, 60)
+        profile_layout.addWidget(self.profile_table)
 
         layout.addWidget(profile_group)
 
@@ -370,10 +408,25 @@ class MainWindow(QMainWindow):
 
         profile_group = QGroupBox("Target Profile")
         pl_layout = QVBoxLayout(profile_group)
-        self.res_profile_list = QListWidget()
-        self.res_profile_list.setAlternatingRowColors(True)
-        self.res_profile_list.setMinimumHeight(140)
-        pl_layout.addWidget(self.res_profile_list)
+        self.res_profile_table = QTableWidget()
+        self.res_profile_table.setAlternatingRowColors(True)
+        self.res_profile_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.res_profile_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.res_profile_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.res_profile_table.setColumnCount(7)
+        self.res_profile_table.setHorizontalHeaderLabels([
+            "Browser", "Profile", "Display Name", "Email", "Critical Files", "Est. Size", "Default"
+        ])
+        r_header = self.res_profile_table.horizontalHeader()
+        r_header.setSectionResizeMode(0, QHeaderView.Interactive)
+        r_header.setSectionResizeMode(1, QHeaderView.Interactive)
+        r_header.setSectionResizeMode(2, QHeaderView.Stretch)
+        r_header.setSectionResizeMode(3, QHeaderView.Stretch)
+        r_header.setSectionResizeMode(4, QHeaderView.Interactive)
+        r_header.setSectionResizeMode(5, QHeaderView.Interactive)
+        r_header.setSectionResizeMode(6, QHeaderView.Fixed)
+        self.res_profile_table.setColumnWidth(6, 60)
+        pl_layout.addWidget(self.res_profile_table)
         layout.addWidget(profile_group)
 
         src_group = QGroupBox("Backup Source")
@@ -517,7 +570,6 @@ class MainWindow(QMainWindow):
         dest_h.addWidget(self.schedule_dest_edit)
         btn_b = QPushButton("Browse...")
         btn_b.clicked.connect(lambda: self.browse_into(self.schedule_dest_edit))
-        dest_h.addWidget(btn_h_btn := QWidget())
         dest_h.addWidget(btn_b)
         self.schedule_dest_widget = QWidget()
         self.schedule_dest_widget.setLayout(dest_h)
@@ -569,10 +621,25 @@ class MainWindow(QMainWindow):
         ex_browser.addStretch()
         ex_l.addLayout(ex_browser)
 
-        self.export_profile_list = QListWidget()
-        self.export_profile_list.setAlternatingRowColors(True)
-        self.export_profile_list.setMinimumHeight(120)
-        ex_l.addWidget(self.export_profile_list)
+        self.export_profile_table = QTableWidget()
+        self.export_profile_table.setAlternatingRowColors(True)
+        self.export_profile_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.export_profile_table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.export_profile_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.export_profile_table.setColumnCount(7)
+        self.export_profile_table.setHorizontalHeaderLabels([
+            "Browser", "Profile", "Display Name", "Email", "Critical Files", "Est. Size", "Default"
+        ])
+        ex_header = self.export_profile_table.horizontalHeader()
+        ex_header.setSectionResizeMode(0, QHeaderView.Interactive)
+        ex_header.setSectionResizeMode(1, QHeaderView.Interactive)
+        ex_header.setSectionResizeMode(2, QHeaderView.Stretch)
+        ex_header.setSectionResizeMode(3, QHeaderView.Stretch)
+        ex_header.setSectionResizeMode(4, QHeaderView.Interactive)
+        ex_header.setSectionResizeMode(5, QHeaderView.Interactive)
+        ex_header.setSectionResizeMode(6, QHeaderView.Fixed)
+        self.export_profile_table.setColumnWidth(6, 60)
+        ex_l.addWidget(self.export_profile_table)
 
         ex_dest = QHBoxLayout()
         ex_dest.addWidget(QLabel("Output .zip:"))
@@ -663,7 +730,7 @@ class MainWindow(QMainWindow):
         self.browsers = BrowserDetection.get_installed_browsers()
         for b in self.browsers:
             display = f"{b['name']}  (v{b['version']})"
-            item_widget = BrowserListItem(b)
+            item_widget = BrowserListItem(b, on_changed=self.on_browser_changed)
             item = QListWidgetItem()
             item.setSizeHint(item_widget.sizeHint())
             self.browser_list.addItem(item)
@@ -673,12 +740,13 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Detected {len(self.browsers)} browser(s)")
         self.status_bar.showMessage(f"Detected {len(self.browsers)} browser(s). {self._running_count()} running.")
         self.refresh_export_combo()
+        self.on_browser_changed()
 
     def refresh_export_combo(self):
         """Update export combo and associated profiles."""
         try:
             self.export_browser_combo.clear()
-            self.export_profile_list.clear()
+            self.export_profile_table.setRowCount(0)
             for b in self.browsers:
                 display = f"{b['name']}  (v{b['version']})"
                 self.export_browser_combo.addItem(display, b)
@@ -688,16 +756,42 @@ class MainWindow(QMainWindow):
 
     def on_export_browser_changed(self):
         browser = self.export_browser_combo.currentData()
-        self.export_profile_list.clear()
+        self.export_profile_table.setRowCount(0)
         if browser:
             profiles = BrowserDetection.get_browser_profiles(browser)
             for p in profiles:
-                display = f"{p['name']}  ({p['size_mb']:.1f} MB)"
-                if p.get("is_default"):
-                    display += "  (Default)"
-                item = QListWidgetItem(display)
-                item.setData(Qt.UserRole, {"browser": browser, "profile": p})
-                self.export_profile_list.addItem(item)
+                row = self.export_profile_table.rowCount()
+                self.export_profile_table.insertRow(row)
+
+                self.export_profile_table.setItem(row, 0, QTableWidgetItem(browser.get("name", "")))
+                self.export_profile_table.setItem(row, 1, QTableWidgetItem(p.get("name", "")))
+                self.export_profile_table.setItem(row, 2, QTableWidgetItem(p.get("display_name", "")))
+                self.export_profile_table.setItem(row, 3, QTableWidgetItem(p.get("email", "")))
+
+                # Critical Files
+                full_path = p.get("full_path", "")
+                critical_str = ""
+                if full_path:
+                    try:
+                        summary = BrowserDetection.get_profile_backup_summary(full_path)
+                        critical = summary.get("critical_files", [])
+                        backed = sum(1 for c in critical if c["exists"])
+                        total = len(critical)
+                        critical_str = f"{backed}/{total}"
+                    except Exception:
+                        critical_str = "?"
+                self.export_profile_table.setItem(row, 4, QTableWidgetItem(critical_str))
+
+                # Est. Size
+                est_size = p.get("size_mb", 0)
+                self.export_profile_table.setItem(row, 5, QTableWidgetItem(f"{est_size:.1f} MB"))
+
+                # Default
+                is_default = "Yes" if p.get("is_default", False) else "No"
+                self.export_profile_table.setItem(row, 6, QTableWidgetItem(is_default))
+
+                # Store profile data
+                self.export_profile_table.item(row, 0).setData(Qt.UserRole, {"browser": browser, "profile": p})
 
     def _running_count(self):
         n = 0
@@ -721,7 +815,7 @@ class MainWindow(QMainWindow):
         self.on_browser_changed()
 
     def on_browser_changed(self):
-        self.profile_list.clear()
+        self.profile_table.setRowCount(0)
         for i in range(self.browser_list.count()):
             item = self.browser_list.item(i)
             widget = self.browser_list.itemWidget(item)
@@ -731,30 +825,92 @@ class MainWindow(QMainWindow):
             try:
                 profiles = BrowserDetection.get_browser_profiles(browser)
                 for p in profiles:
-                    item_widget = ProfileListItem(p)
-                    list_item = QListWidgetItem()
-                    list_item.setData(Qt.UserRole, browser)
-                    list_item.setSizeHint(item_widget.sizeHint())
-                    self.profile_list.addItem(list_item)
-                    self.profile_list.setItemWidget(list_item, item_widget)
+                    row = self.profile_table.rowCount()
+                    self.profile_table.insertRow(row)
+
+                    # Checkbox column
+                    chk_item = QTableWidgetItem()
+                    chk_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+                    chk_item.setCheckState(Qt.Checked)
+                    self.profile_table.setItem(row, 0, chk_item)
+
+                    # Browser
+                    self.profile_table.setItem(row, 1, QTableWidgetItem(browser.get("name", "")))
+                    # Profile
+                    self.profile_table.setItem(row, 2, QTableWidgetItem(p.get("name", "")))
+                    # Display Name
+                    display_name = p.get("display_name", "")
+                    self.profile_table.setItem(row, 3, QTableWidgetItem(display_name))
+                    # Email
+                    email = p.get("email", "")
+                    self.profile_table.setItem(row, 4, QTableWidgetItem(email))
+                    # Critical Files
+                    full_path = p.get("full_path", "")
+                    critical_str = ""
+                    if full_path:
+                        try:
+                            summary = BrowserDetection.get_profile_backup_summary(full_path)
+                            critical = summary.get("critical_files", [])
+                            backed = sum(1 for c in critical if c["exists"])
+                            total = len(critical)
+                            critical_str = f"{backed}/{total}"
+                        except Exception:
+                            critical_str = "?"
+                    self.profile_table.setItem(row, 5, QTableWidgetItem(critical_str))
+                    # Est. Size
+                    est_size = p.get("size_mb", 0)
+                    self.profile_table.setItem(row, 6, QTableWidgetItem(f"{est_size:.1f} MB"))
+                    # Default
+                    is_default = "Yes" if p.get("is_default", False) else "No"
+                    self.profile_table.setItem(row, 7, QTableWidgetItem(is_default))
+
+                    # Store profile data in row
+                    self.profile_table.item(row, 0).setData(Qt.UserRole, {"browser": browser, "profile": p})
             except Exception as e:
                 log.error(f"Failed to load profiles for {browser.get('name')}: {e}")
         self.update_profile_count()
 
     def on_res_browser_changed(self):
         browser = self.res_browser_combo.currentData()
-        self.res_profile_list.clear()
+        self.res_profile_table.setRowCount(0)
         if browser:
             profiles = BrowserDetection.get_browser_profiles(browser)
             for p in profiles:
-                display = f"{p['name']}  ({p['size_mb']:.1f} MB)"
-                if p.get("is_default"):
-                    display += "  (Default)"
-                item = QListWidgetItem(display)
-                item.setData(Qt.UserRole, p)
-                self.res_profile_list.addItem(item)
-            if self.res_profile_list.count() > 0:
-                self.res_profile_list.setCurrentRow(0)
+                row = self.res_profile_table.rowCount()
+                self.res_profile_table.insertRow(row)
+
+                self.res_profile_table.setItem(row, 0, QTableWidgetItem(browser.get("name", "")))
+                self.res_profile_table.setItem(row, 1, QTableWidgetItem(p.get("name", "")))
+                self.res_profile_table.setItem(row, 2, QTableWidgetItem(p.get("display_name", "")))
+                self.res_profile_table.setItem(row, 3, QTableWidgetItem(p.get("email", "")))
+
+                # Critical Files
+                full_path = p.get("full_path", "")
+                critical_str = ""
+                if full_path:
+                    try:
+                        summary = BrowserDetection.get_profile_backup_summary(full_path)
+                        critical = summary.get("critical_files", [])
+                        backed = sum(1 for c in critical if c["exists"])
+                        total = len(critical)
+                        critical_str = f"{backed}/{total}"
+                    except Exception:
+                        critical_str = "?"
+                self.res_profile_table.setItem(row, 4, QTableWidgetItem(critical_str))
+
+                # Est. Size
+                est_size = p.get("size_mb", 0)
+                self.res_profile_table.setItem(row, 5, QTableWidgetItem(f"{est_size:.1f} MB"))
+
+                # Default
+                is_default = "Yes" if p.get("is_default", False) else "No"
+                self.res_profile_table.setItem(row, 6, QTableWidgetItem(is_default))
+
+                # Store profile data
+                self.res_profile_table.item(row, 0).setData(Qt.UserRole, {"browser": browser, "profile": p})
+
+            if self.res_profile_table.rowCount() > 0:
+                self.res_profile_table.selectRow(0)
 
     def toggle_all_profiles(self, checked):
         self.chk_all_profiles.blockSignals(True)
@@ -763,33 +919,33 @@ class MainWindow(QMainWindow):
         self.update_profile_count()
 
     def set_all_profiles(self, checked):
-        for i in range(self.profile_list.count()):
-            wi = self.profile_list.itemWidget(self.profile_list.item(i))
-            if wi:
-                wi.set_checked(checked)
+        for row in range(self.profile_table.rowCount()):
+            item = self.profile_table.item(row, 0)
+            if item:
+                item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
         self.update_profile_count()
 
     def update_profile_count(self):
-        total = self.profile_list.count()
+        total = self.profile_table.rowCount()
         checked = 0
-        for i in range(total):
-            wi = self.profile_list.itemWidget(self.profile_list.item(i))
-            if wi and wi.is_checked():
+        for row in range(total):
+            item = self.profile_table.item(row, 0)
+            if item and item.checkState() == Qt.Checked:
                 checked += 1
         self.profile_count_label.setText(f"{checked}/{total} profiles selected")
 
     def get_selected_profiles(self):
         selected = []
-        for i in range(self.profile_list.count()):
-            item = self.profile_list.item(i)
-            widget = self.profile_list.itemWidget(item)
-            browser = item.data(Qt.UserRole)
-            if widget and widget.is_checked() and browser:
-                selected.append({
-                    "browser": browser,
-                    "profile": widget.profile_data,
-                    "item_label": f"{browser['name']}/{widget.profile_data['name']}"
-                })
+        for row in range(self.profile_table.rowCount()):
+            chk_item = self.profile_table.item(row, 0)
+            if chk_item and chk_item.checkState() == Qt.Checked:
+                data = chk_item.data(Qt.UserRole)
+                if data:
+                    selected.append({
+                        "browser": data["browser"],
+                        "profile": data["profile"],
+                        "item_label": f"{data['browser']['name']}/{data['profile']['name']}"
+                    })
         return selected
 
     def browse_destination(self):
@@ -837,14 +993,25 @@ class MainWindow(QMainWindow):
         exclude_dirs = config.get_default("excludeFromBackup") if self.chk_exclude_cache.isChecked() else []
         params_list = []
         for s in selected:
+            profile = s["profile"]
+            display = profile.get("display_name", "")
+            email = profile.get("email", "")
+            name_part = f"{s['browser']['name']}/{profile['name']}"
+            if display and display != profile["name"]:
+                name_part += f" ({display}"
+                if email:
+                    name_part += f" <{email}>"
+                name_part += ")"
+            elif email:
+                name_part += f" <{email}>"
             params_list.append({
                 "browser": s["browser"],
-                "profile": s["profile"],
+                "profile": profile,
                 "destination": dest,
                 "exclude_dirs": exclude_dirs,
                 "log_file": log_path,
                 "force": self.chk_force.isChecked(),
-                "profile_name": f"{s['browser']['name']}/{s['profile']['name']}",
+                "profile_name": name_part,
             })
 
         self.btn_backup.setEnabled(False)
@@ -890,13 +1057,13 @@ class MainWindow(QMainWindow):
 
     def start_restore(self):
         browser = self.res_browser_combo.currentData()
-        item = self.res_profile_list.currentItem()
+        rows = self.res_profile_table.selectionModel().selectedRows() if self.res_profile_table.selectionModel() else []
         src = self.src_edit.text().strip()
 
         if not browser:
             QMessageBox.warning(self, "Error", "Please select a browser.")
             return
-        if not item:
+        if not rows:
             QMessageBox.warning(self, "Error", "Please select a profile to restore to.")
             return
         if not src:
@@ -906,7 +1073,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", "Selected folder does not contain a valid backup (missing manifest.json).")
             return
 
-        profile = item.data(Qt.UserRole)
+        row = rows[0].row()
+        item = self.res_profile_table.item(row, 0)
+        profile = item.data(Qt.UserRole) if item else None
+        if not profile:
+            QMessageBox.warning(self, "Error", "Selected profile has no data. Please re-select.")
+            return
 
         params = {
             "browser": browser,
@@ -918,8 +1090,9 @@ class MainWindow(QMainWindow):
         }
 
         self.btn_restore.setEnabled(False)
-        self.status_label.setText("Restoring...")
-        self.status_bar.showMessage("Restoring backup...")
+        restore_label = f"Restoring {browser['name']}/{profile['name']}"
+        self.status_label.setText(restore_label)
+        self.status_bar.showMessage(restore_label)
 
         self.worker = Worker("restore", [params])
         self.worker.progress.connect(self.status_label.setText)
@@ -1129,14 +1302,17 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Scheduled backup issues: {result.get('message', '?')}")
 
     def export_profile(self):
-        item = self.export_profile_list.currentItem()
+        # Get selected row from table
+        selected_rows = self.export_profile_table.selectionModel().selectedRows()
         out_path = self.export_dest_edit.text().strip()
-        if not item:
+        if not selected_rows:
             QMessageBox.warning(self, "Error", "Please select a profile to export.")
             return
         if not out_path:
             QMessageBox.warning(self, "Error", "Please specify an output path (.zip).")
             return
+        row = selected_rows[0].row()
+        item = self.export_profile_table.item(row, 0)
         data = item.data(Qt.UserRole)
         try:
             from core.backup import BackupEngine
@@ -1206,14 +1382,21 @@ def cli_main(args):
             print("No browsers found.")
             return 0
         print("Installed Browsers:")
-        print("-" * 60)
+        print("-" * 70)
         for b in browsers:
             print(f"  {b['name']} (v{b['version']}) - {b.get('type', '?')}")
             try:
                 profiles = BrowserDetection.get_browser_profiles(b)
                 for p in profiles:
                     default = " (default)" if p.get("is_default") else ""
-                    print(f"      - {p['name']} [{p['size_mb']:.1f} MB]{default}")
+                    name_part = p['name']
+                    if p.get("display_name") and p["display_name"] != p["name"]:
+                        name_part += f" - {p['display_name']}"
+                    if p.get("email"):
+                        name_part += f" <{p['email']}>"
+                    cf = p.get("critical_files")
+                    cf_str = f" | critical: {cf}" if cf is not None else ""
+                    print(f"      - {name_part} [{p['size_mb']:.1f} MB]{default}{cf_str}")
             except Exception as e:
                 print(f"      [profiles unavailable: {e}]")
             print()

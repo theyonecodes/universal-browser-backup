@@ -167,7 +167,7 @@ class BackupEngine:
         }
 
     @staticmethod
-    def create_manifest(backup_path, browser, profile_name, robocopy_exit_code, log_file):
+    def create_manifest(backup_path, browser, profile_name, robocopy_exit_code, log_file, profile=None):
         manifest_path = Path(backup_path) / "manifest.json"
 
         critical_files = config.get_default("checksumCriticalFiles") or [
@@ -237,6 +237,8 @@ class BackupEngine:
                 "detectStrategy": browser.get("detectStrategy", "localState")
             },
             "profile": profile_name,
+            "profileDisplayName": (profile or {}).get("display_name", ""),
+            "profileEmail": (profile or {}).get("email", ""),
             "source": browser["profile_path"],
             "destination": str(backup_path),
             "stats": {
@@ -267,7 +269,7 @@ class BackupEngine:
 
         return str(manifest_path)
     @classmethod
-    def run_backup(cls, browser, profile, destination, exclude_dirs=None, log_file=None, force=False):
+    def run_backup(cls, browser, profile, destination, exclude_dirs=None, log_file=None, force=False, profile_name=None, item_label=None):
         # 1. Check if browser is running
         process_name = browser["process_name"]
         try:
@@ -327,7 +329,7 @@ class BackupEngine:
                 return {"success": False, "message": f"Robocopy failed with exit code {exit_code}"}
 
             # Create manifest
-            manifest_path = cls.create_manifest(backup_folder, browser, profile["name"], exit_code, log_file)
+            manifest_path = cls.create_manifest(backup_folder, browser, profile["name"], exit_code, log_file, profile=profile)
 
             # Calculate final size
             files = list(backup_folder.rglob("*"))
@@ -347,7 +349,7 @@ class BackupEngine:
             return {"success": False, "message": str(e)}
 
     @staticmethod
-    def verify_backup(backup_path, log_file=None):
+    def verify_backup(backup_path, log_file=None, item_label=None, browser=None, profile=None):
         """Verify integrity of an existing backup by recomputing checksums."""
         backup_path = Path(backup_path)
         manifest_path = backup_path / "manifest.json"

@@ -40,7 +40,7 @@ class RestoreEngine:
             return {"valid": False, "message": f"Verification error: {e}"}
 
     @classmethod
-    def run_restore(cls, browser, profile, backup_path, log_file=None, force=False):
+    def run_restore(cls, browser, profile, backup_path, log_file=None, force=False, create_rollback=True):
         # 1. Verify
         verification = cls.verify_backup(backup_path, browser)
         if not verification["valid"]:
