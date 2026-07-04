@@ -11,7 +11,9 @@ function New-Manifest {
         [Parameter(Mandatory)] [string]$ProfileName,
         [int]$RobocopyExitCode = 0,
         [string]$LogFile,
-        [string[]]$CriticalFiles
+        [string[]]$CriticalFiles,
+        [string]$ProfileDisplayName = "",
+        [string]$ProfileEmail = ""
     )
 
     if (-not $CriticalFiles) {
@@ -82,6 +84,8 @@ function New-Manifest {
             detectStrategy = [string]$Browser.DetectStrategy
         }
         profile       = $ProfileName
+        profileDisplayName = $ProfileDisplayName
+        profileEmail  = $ProfileEmail
         source        = [string]$Browser.ProfilePath
         destination   = $BackupPath
         stats         = [ordered]@{
@@ -250,7 +254,9 @@ function New-BrowserBackup {
         [switch]$Force,
         [int]$RobocopyRetries = 3,
         [int]$RobocopyWait = 2,
-        [string[]]$CriticalFiles
+        [string[]]$CriticalFiles,
+        [string]$ProfileDisplayName = "",
+        [string]$ProfileEmail = ""
     )
 
     if (-not $PSCmdlet.ShouldProcess("Backup of $($Browser.Name)")) {
@@ -264,6 +270,14 @@ function New-BrowserBackup {
     if (-not $profile) {
         Write-Log -Message "Profile '$ProfileName' not found for $($Browser.Name)" -Level "ERROR" -LogFile $LogFile
         return @{ Success = $false; Message = "Profile not found"; Profile = $ProfileName }
+    }
+
+    # Resolve display name and email from profile object if not provided
+    if ([string]::IsNullOrWhiteSpace($ProfileDisplayName) -and $profile.DisplayName) {
+        $ProfileDisplayName = [string]$profile.DisplayName
+    }
+    if ([string]::IsNullOrWhiteSpace($ProfileEmail) -and $profile.Email) {
+        $ProfileEmail = [string]$profile.Email
     }
 
     $isRunning = Test-BrowserRunning -Browser $Browser
@@ -325,7 +339,9 @@ function New-BrowserBackup {
         -ProfileName $ProfileName `
         -RobocopyExitCode $exitCode `
         -LogFile $LogFile `
-        -CriticalFiles $CriticalFiles
+        -CriticalFiles $CriticalFiles `
+        -ProfileDisplayName $ProfileDisplayName `
+        -ProfileEmail $ProfileEmail
 
     $totalSize = 0
     try {

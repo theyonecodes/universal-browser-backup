@@ -40,7 +40,7 @@ if "%choice%"=="2" (
     where python >nul 2>&1
     if !errorlevel! equ 0 (
         cd /d "%~dp0"
-        start "Universal Browser Backup" python -c "import main; main.main()"
+        start "Universal Browser Backup" python main.py
         if !errorlevel! neq 0 (
             echo.
             echo WARNING: Python GUI failed to start. Trying PowerShell WPF instead...

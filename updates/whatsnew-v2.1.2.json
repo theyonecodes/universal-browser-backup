@@ -1,0 +1,90 @@
+{
+  "version": "2.1.2-pre",
+  "title": "Universal Browser Backup v2.1.2-pre Release Notes",
+  "published": "2025-07-02",
+  "description": "Pre-release notes for v2.1.2-pre featuring refined browser detection, expanded coverage, and enhanced compatibility",
+  "feed_url": "https://raw.githubusercontent.com/UniversalBrowserBackup/UniversalBrowserBackup/main/updates/whatsnew-v2.1.2.json",
+  "items": [
+    {
+      "id": "v2.1.2-pre-chromium-detection",
+      "title": "Chromium Browser Detection Engine (Static Method Refinement)",
+      "description": "Finalized detection logic through static `BrowserDetection.get_chromium_browsers()` method providing consistent crawling API across LOCALAPPDATA, Program Files, and Program Files (x86) paths. Maintains AppData and Program Files lookup patterns for consumer compatibility.",
+      "date": "2025-07-01",
+      "category": "Detection",
+      "author": "Release Engineering",
+      "link": "https://github.com/UniversalBrowserBackup/UniversalBrowserBackup/releases/tag/v2.1.2-pre"
+    },
+    {
+      "id": "v2.1.2-pre-userdata-v2-discovery",
+      "title": "User Data / User Data V2 Subdirectory Discovery",
+      "description": "Full implementation for discovering and normalizing User Data and User Data V2 subdirectories across all supported Chromium-family browsers. Enables authoritative identification of Chrome-like profiles regardless of variant naming conventions.",
+      "date": "2025-07-01",
+      "category": "Discovery",
+      "author": "Release Engineering",
+      "link": "https://github.com/UniversalBrowserBackup/UniversalBrowserBackup/releases/tag/v2..1.2-pre"
+    },
+    {
+      "id": "v2.1.2-pre-metadata-schema",
+      "title": "Normalization Schema v2.1.2-pre",
+      "description": "Adopted unified `normalize_browser()` schema for metadata alignment between PowerShell consumer and Docker container consumers. Schema retains Local State existence as required directory filter. Consistency enforced across 12+ metadata fields.",
+      "date": "2025-07-01",
+      "category": "Schema",
+      "author": "Core Team",
+      "link": "https://github.com/UniversalBrowserBackup/UniversalBrowserBackup/releases/tag/v2.1.2-pre"
+    },
+    {
+      "id": "v2.1.2-pre-browser-catalog",
+      "title": "Browser Family Catalog Expansion (40+ Families)",
+      "description": "Comprehensive browser catalog in `configs/browsers.json` now includes 40+ browser families with detailed metadata, prioritization rules, and detector patterns. Families cover market-leading Chromium derivatives, legacy browsers, and regional variants with capability flags.",
+      "date": "2025-07-01",
+      "category": "Catalog",
+      "author": "Browser Research",
+      "link": "https://github.com/UniversalBrowserBackup/UniversalBrowserBackup/releases/tag/v2.1.2-pre"
+    },
+    {
+      "id": "v2.1.2-pre-powershell-integration",
+      "title": "PowerShell Consumer Integration",
+      "description": "Synchronized PowerShell consumers (`GUI\\App.ps1`, `UniversalBrowserBackup.ps1`) to reference new detection APIs. Consumer-facing exception handling and retention list architecture preserved; zero regressions introduced. All PowerShell test suites passing (18/18 Pester).",
+      "date": "2025-07-01",
+      "category": "Consumer",
+      "author": "PowerShell Team",
+      "link": "https://github.com/UniversalBrowserBackup/UniversalBrowserBackup/releases/tag/v2.1.2-pre"
+    },
+    {
+      "id": "v2.1.2-pre-docker-integration",
+      "title": "Docker Consumer Integration",
+      "description": "Entrypoint `docker/…/browsers-entrypoint.ps1` updated to consume new API contracts and validated end-to-end. Production Docker image `unibab/universalbrowserbackup:v2.1.2-pre` built, pushed, and smoke-tested. All Docker test suites passing (7/7).",
+      "date": "2025-07-01",
+      "category": "Docker",
+      "author": "DevOps",
+      "link": "https://github.com/UniversalBrowserBackup/UniversalBrowserBackup/releases/tag/v2.1.2-pre"
+    },
+    {
+      "id": "v2.1.2-pre-test-validation",
+      "title": "Test Suite Validation Complete",
+      "description": "All downstream test suites validated: 18/18 Pester, 12/12 pytest, 7/7 Docker validation tests passing. No regressions introduced to log retention, exception handling, or legacy feature flags.",
+      "date": "2025-07-01",
+      "category": "Testing",
+      "author": "QA Team",
+      "link": "https://github.com/UniversalBrowserBackup/UniversalBrowserBackup/releases/tag/v2.1.2-pre"
+    },
+    {
+      "id": "v2.1.2-pre-release-bundle",
+      "title": "Release Bundle Assembly v2.1.2-pre",
+      "description": "UniversalBrowserBackup-v2.1.2-pre.zip assembled containing\\n- UniversalBrowserBackup.ps1\\n- GUI\\App.ps1\\n- UniversalBrowserBackup.exe\\n- docs\\ directory and submodules\\nCross-reference validated against artifact checksum lists.",
+      "date": "2025-07-01",
+      "category": "Release",
+      "author": "Release Engineering",
+      "link": "https://github.com/UniversalBrowserBackup/UniversalBrowserBackup/releases/tag/v2.1.2-pre"
+    },
+    {
+      "id": "v2.1.2-pre-whatsnew-generated",
+      "title": "Release Notes RSS Feed Ready",
+      "description": "`updates/whatsnew-v2.1.2.json` created and populated with 8 structured release items following semantic versioning changelog conventions. Feed includes IDs, titles, dates, and standardized schema for downstream consumers.",
+      "date": "2025-07-02",
+      "category": "Documentation",
+      "author": "Release Engineering",
+      "link": "https://github.com/UniversalBrowserBackup/UniversalBrowserBackup/blob/main/updates/whatsnew-v2.1.2.json"
+    }
+  ]
+}

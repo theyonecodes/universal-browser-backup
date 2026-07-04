@@ -157,11 +157,57 @@ Describe "BackupEngine Module" {
 
 Describe "RestoreEngine Module" {
     Import-Module "$script:ModuleRoot\Modules\RestoreEngine.psm1" -Force -DisableNameChecking
+    Import-Module "$script:ModuleRoot\Modules\Config.psm1" -Force -DisableNameChecking
+    Import-Module "$script:ModuleRoot\Modules\BrowserDetection.psm1" -Force -DisableNameChecking
 
     Context "Get-BackupInfo" {
         It "Returns null for nonexistent backup" {
             $result = Get-BackupInfo -BackupPath "C:\NonExistentPath"
             $result | Should BeNullOrEmpty
+        }
+    }
+
+    Context "Test-RestorePrerequisites (legacy fallback)" {
+        It "Accepts legacy backup without manifest.json when ≥3 critical files exist" {
+            $tmpRoot = Join-Path $env:TEMP "ubb_pester_legacy_$([guid]::NewGuid().ToString('N'))"
+            New-Item -ItemType Directory -Path $tmpRoot -Force | Out-Null
+            try {
+                $profileDir = Join-Path $tmpRoot "Default"
+                New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+                "x" | Set-Content -LiteralPath (Join-Path $profileDir "Bookmarks")
+                "x" | Set-Content -LiteralPath (Join-Path $profileDir "Login Data")
+                "x" | Set-Content -LiteralPath (Join-Path $profileDir "Cookies")
+                "x" | Set-Content -LiteralPath (Join-Path $profileDir "Preferences")
+                "x" | Set-Content -LiteralPath (Join-Path $tmpRoot "Local State")
+
+                $cfg = Get-BrowserConfig -ConfigPath $null
+                $browsers = @(Get-InstalledBrowsers -Config $cfg)
+                $chrome = $browsers | Where-Object { $_.Name -like 'Chrome*' } | Select-Object -First 1
+                if (-not $chrome) {
+                    $chrome = [PSCustomObject]@{ Name = 'Chrome'; Type = 'Chromium' }
+                }
+
+                $result = Test-RestorePrerequisites -BackupPath $tmpRoot -Browser $chrome
+                $result.Valid | Should Be $true
+                $result.LegacyDetected | Should Be $true
+                $result.DetectedCriticalFiles.Count | Should BeGreaterThan 2
+            } finally {
+                Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It "Rejects legacy backup without manifest.json and <3 critical files" {
+            $tmpRoot = Join-Path $env:TEMP "ubb_pester_legacy_empty_$([guid]::NewGuid().ToString('N'))"
+            New-Item -ItemType Directory -Path $tmpRoot -Force | Out-Null
+            try {
+                "x" | Set-Content -LiteralPath (Join-Path $tmpRoot "Bookmarks")
+                $cfg = Get-BrowserConfig -ConfigPath $null
+                $chrome = [PSCustomObject]@{ Name = 'Chrome'; Type = 'Chromium' }
+                $result = Test-RestorePrerequisites -BackupPath $tmpRoot -Browser $chrome
+                $result.Valid | Should Be $false
+            } finally {
+                Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 }

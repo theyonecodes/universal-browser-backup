@@ -333,12 +333,14 @@ function Get-BrowserProfiles {
                 $email = ""
                 if ($infoCache.ContainsKey($key)) {
                     $cacheEntry = $infoCache[$key]
-                    $displayName = if ($cacheEntry.name) { $cacheEntry.name } else { "" }
-                    $email = if ($cacheEntry.gaia_name) { $cacheEntry.gaia_name }
-                             elseif ($cacheEntry.user_name) { $cacheEntry.user_name }
-                             elseif ($cacheEntry.gaia_email) { $cacheEntry.gaia_email }
-                             elseif ($cacheEntry.signed_in_email) { $cacheEntry.signed_in_email }
-                             else { "" }
+                    $displayName = ""
+                    if ($cacheEntry.PSObject.Properties.Name -contains 'name') { $displayName = $cacheEntry.name }
+                    
+                    $email = ""
+                    if ($cacheEntry.PSObject.Properties.Name -contains 'gaia_name') { $email = $cacheEntry.gaia_name }
+                    elseif ($cacheEntry.PSObject.Properties.Name -contains 'user_name') { $email = $cacheEntry.user_name }
+                    elseif ($cacheEntry.PSObject.Properties.Name -contains 'gaia_email') { $email = $cacheEntry.gaia_email }
+                    elseif ($cacheEntry.PSObject.Properties.Name -contains 'signed_in_email') { $email = $cacheEntry.signed_in_email }
                 }
 
                 # Count critical files

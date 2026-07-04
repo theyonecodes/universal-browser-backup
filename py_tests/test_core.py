@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from core.config_manager import ConfigManager
 from core.detection import BrowserDetection
 from core.backup import BackupEngine, list_backups
+from core.restore import RestoreEngine
 
 
 class TestCoreLogic(unittest.TestCase):
@@ -146,6 +147,34 @@ class TestCoreLogic(unittest.TestCase):
         self.assertTrue(ok, msg=msg)
         self.assertTrue(out_zip.exists())
         self.assertGreater(out_zip.stat().st_size, 0)
+
+    def test_restore_legacy_no_manifest_accepts_critical_files(self):
+        """Restore should accept a backup that lacks manifest.json if it contains enough critical files."""
+        backup = Path(self.tmp_dir) / "legacy_backup"
+        backup.mkdir()
+
+        # Mimic a Chromium User Data root with at least 3 critical files in nested profile
+        profile = backup / "Default"
+        profile.mkdir()
+        (profile / "Bookmarks").write_text("{}", encoding="utf-8")
+        (profile / "Login Data").write_text("x", encoding="utf-8")
+        (profile / "Cookies").write_text("x", encoding="utf-8")
+        (profile / "Preferences").write_text("x", encoding="utf-8")
+        (backup / "Local State").write_text("{}", encoding="utf-8")
+
+        # No manifest.json — verify should now accept
+        v = RestoreEngine.verify_backup(str(backup), {"type": "Chromium", "name": "Chrome"})
+        self.assertTrue(v["valid"], msg=v.get("message"))
+        self.assertTrue(v["manifest"].get("_legacy_no_manifest"))
+
+    def test_restore_legacy_no_manifest_rejects_too_few_files(self):
+        """Restore should refuse a folder with < 3 critical files even without manifest."""
+        backup = Path(self.tmp_dir) / "empty_backup"
+        backup.mkdir()
+        (backup / "Bookmarks").write_text("x", encoding="utf-8")
+
+        v = RestoreEngine.verify_backup(str(backup), {"type": "Chromium", "name": "Chrome"})
+        self.assertFalse(v["valid"])
 
 
 if __name__ == "__main__":

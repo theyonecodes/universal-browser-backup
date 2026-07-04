@@ -613,7 +613,10 @@ $BackupBtn.Add_Click({
                         -Destination $Dest -ExcludeDirs $Excludes -Force:$Force `
                         -LogFile $LogFile -RobocopyRetries $config.defaults.robocopyRetries `
                         -RobocopyWait $config.defaults.robocopyWait -CriticalFiles $config.defaults.checksumCriticalFiles
-                    $results += @{ Browser = $browser.Name; Profile = $p.Name; Result = $result }
+                    $label = $p.Name
+                    if ($p.DisplayName -and $p.DisplayName -ne $p.Name) { $label = "$($p.Name) ($($p.DisplayName))" }
+                    if ($p.Email) { $label = "$label <$($p.Email)>" }
+                    $results += @{ Browser = $browser.Name; Profile = $label; Result = $result }
                 }
             } else {
                 $profiles = @($browser | Where-Object { $_.Name -in ($selected | ForEach-Object { $_.Name }) })
@@ -651,7 +654,7 @@ $BackupBtn.Add_Click({
             }
             [System.Windows.MessageBox]::Show(($lines -join "`n"), "Backup Results", 'OK', 'Information')
         } else {
-            Set-Progress (($job.Id % 100)) "Processing..." $true
+            Set-Progress (($job.Id % 100)) "Backing up..." $true
         }
     })
     $timer.Start()
@@ -688,8 +691,15 @@ $RestoreBtn.Add_Click({
         $stack = [System.Windows.Controls.StackPanel]::new()
         $stack.Margin = "20"
         foreach ($p in $profiles) {
+            $label = $p.Name
+            if ($p.DisplayName -and $p.DisplayName -ne $p.Name) {
+                $label = "$($p.Name) - $($p.DisplayName)"
+            }
+            if ($p.Email) { $label = "$label <$($p.Email)>" }
+            $label = "$label [{0:N1} MB]" -f $p.SizeMB
+            if ($null -ne $p.CriticalFiles) { $label = "$label | $($p.CriticalFiles) critical files" }
             $rb = [System.Windows.Controls.RadioButton]::new()
-            $rb.Content = "{0} ({1:F1} MB)" -f $p.Name, $p.SizeMB
+            $rb.Content = $label
             $rb.GroupName = "ProfileSelect"
             $rb.Tag = $p.Name
             $stack.Children.Add($rb)
@@ -707,7 +717,20 @@ $RestoreBtn.Add_Click({
         }
     }
 
-    Set-Progress 0 "Restoring..." $true
+    # Read manifest for restore context
+    $manifestFile = Join-Path $backupPath.SelectedPath "manifest.json"
+    $restoreLabel = $browser.Name
+    if (Test-Path -LiteralPath $manifestFile -PathType Leaf) {
+        try {
+            $mf = Get-Content -LiteralPath $manifestFile -Raw | ConvertFrom-Json
+            if ($mf.profileDisplayName -and $mf.profileDisplayName -ne $mf.profile) {
+                $restoreLabel = "$($mf.browser.name) - $($mf.profileDisplayName)"
+            }
+            if ($mf.profileEmail) { $restoreLabel = "$restoreLabel <$($mf.profileEmail)>" }
+        } catch { }
+    }
+
+    Set-Progress 0 "Restoring $restoreLabel..." $true
     $RestoreBtn.IsEnabled = $false
 
     $job = Start-Job -ScriptBlock {
@@ -734,14 +757,15 @@ $RestoreBtn.Add_Click({
             Set-Progress 0 "" $false
             
             if ($result.Success) {
-                Update-StatusBar "Restore completed successfully" "#FFA6E3A1"
-                [System.Windows.MessageBox]::Show("Restore completed successfully!`nRollback: $($result.Rollback)", "Success", 'OK', 'Information')
+                Update-StatusBar "Restore completed: $restoreLabel" "#FFA6E3A1"
+                $msg = "Restore completed successfully!`n`nRestored: $restoreLabel`nRollback: $($result.Rollback)"
+                [System.Windows.MessageBox]::Show($msg, "Success", 'OK', 'Information')
             } else {
                 Update-StatusBar "Restore failed: $($result.Message)" "#FFF38BA8"
                 [System.Windows.MessageBox]::Show("Restore failed: $($result.Message)", "Error", 'OK', 'Error')
             }
         } else {
-            Set-Progress (($job.Id % 100)) "Restoring..." $true
+            Set-Progress (($job.Id % 100)) "Restoring $restoreLabel..." $true
         }
     })
     $timer.Start()

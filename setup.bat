@@ -15,10 +15,10 @@ if %errorlevel% neq 0 (
 )
 
 echo [1/3] Upgrading pip...
-python -m pip install --upgrade pip
+python -m pip install --upgrade pip || py -m pip install --upgrade pip
 
 echo [2/3] Installing dependencies...
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt || py -m pip install -r requirements.txt
 
 echo [3/3] Finalizing...
 echo.

@@ -19,9 +19,37 @@ function Test-RestorePrerequisites {
     }
 
     $manifestPath = Join-Path $BackupPath "manifest.json"
+
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-        [void]$issues.Add("No manifest.json found in backup")
-        return @{ Valid = $false; Issues = $issues.ToArray(); Manifest = $null }
+        # Legacy fallback: scan recursively for known critical files
+        $criticalFiles = @(
+            "Login Data", "Cookies", "Preferences", "Secure Preferences",
+            "Bookmarks", "Bookmarks.bak", "History", "Web Data"
+        )
+        $found = @{}
+        foreach ($cf in $criticalFiles) {
+            $matches = @(
+                Get-ChildItem -LiteralPath $BackupPath -Filter $cf -Force -ErrorAction SilentlyContinue
+                Get-ChildItem -LiteralPath $BackupPath -Filter $cf -Recurse -Depth 2 -Force -ErrorAction SilentlyContinue
+            )
+            foreach ($m in $matches) {
+                if ($m -and -not $found.ContainsKey($m.Name)) {
+                    $found[$m.Name] = $m.FullName
+                }
+            }
+        }
+        if ($found.Count -lt 3) {
+            [void]$issues.Add("No manifest.json and only $($found.Count) known critical file(s) found — too risky to restore.")
+            return @{ Valid = $false; Issues = $issues.ToArray(); Manifest = $null }
+        }
+        Write-Log -Message "Legacy backup detected (no manifest); $((@($found.Keys)).Count) critical file(s) identified." -Level "INFO"
+        return @{
+            Valid = $true
+            Issues = @()
+            Manifest = $null
+            LegacyDetected = $true
+            DetectedCriticalFiles = $found
+        }
     }
 
     try {

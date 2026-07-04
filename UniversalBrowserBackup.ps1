@@ -16,7 +16,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 
 # Enable -WhatIf to flow into CmdletBinding-aware functions inside the modules.
 $PSDefaultParameterValues['*:WhatIf'] = $WhatIf.IsPresent
@@ -55,7 +55,7 @@ switch ($PSCmdlet.ParameterSetName) {
             exit 0
         }
         Write-Host "`nInstalled Browsers:" -ForegroundColor Green
-        Write-Host ("-" * 60) -ForegroundColor DarkGray
+        Write-Host ("-" * 70) -ForegroundColor DarkGray
         foreach ($b in $browsers) {
             $running = if (Test-BrowserRunning -Browser $b) { ' [RUNNING]' } else { '' }
             Write-Host "  $($b.Name) v$($b.Version)$running" -ForegroundColor Cyan
@@ -66,7 +66,15 @@ switch ($PSCmdlet.ParameterSetName) {
             $profiles = @(Get-BrowserProfiles -Browser $b)
             foreach ($p in $profiles) {
                 $default = if ($p.IsDefault) { ' (default)' } else { '' }
-                Write-Host ("      - {0} [{1} MB]{2}" -f $p.Name, $p.SizeMB, $default) -ForegroundColor DarkCyan
+                $namePart = $p.Name
+                if ($p.DisplayName -and $p.DisplayName -ne $p.Name) {
+                    $namePart = "$($p.Name) - $($p.DisplayName)"
+                }
+                if ($p.Email) {
+                    $namePart = "$namePart <$($p.Email)>"
+                }
+                $cf = if ($null -ne $p.CriticalFiles) { " | critical: $($p.CriticalFiles)" } else { '' }
+                Write-Host ("      - {0} [{1} MB]{2}{3}" -f $namePart, $p.SizeMB, $default, $cf) -ForegroundColor DarkCyan
             }
             Write-Host ''
         }
@@ -105,7 +113,11 @@ switch ($PSCmdlet.ParameterSetName) {
             }
             $successCount = 0
             foreach ($p in $profiles) {
-                Write-Log -Message "Backing up profile: $($p.Name)" -Level 'INFO' -LogFile $logFile
+                $label = $p.Name
+                if ($p.DisplayName -and $p.DisplayName -ne $p.Name) { $label = "$($p.Name) ($($p.DisplayName))" }
+                if ($p.Email) { $label = "$label <$($p.Email)>" }
+                Write-Log -Message "Backing up profile: $label" -Level 'INFO' -LogFile $logFile
+                Write-Host ("  Backing up: {0} [{1} MB]..." -f $label, $p.SizeMB) -ForegroundColor Cyan
                 $result = New-BrowserBackup -Browser $target -ProfileName $p.Name `
                     -Destination $dest `
                     -ExcludeDirs $excludes `
@@ -116,11 +128,11 @@ switch ($PSCmdlet.ParameterSetName) {
                     -CriticalFiles $config.defaults.checksumCriticalFiles
 
                 if ($result.Success) {
-                    Write-Host ("Backup completed: {0} ({1} MB)" -f $result.Path, $result.SizeMB) -ForegroundColor Green
+                    Write-Host ("  OK: {0} ({1} MB)" -f $result.Path, $result.SizeMB) -ForegroundColor Green
                     $successCount++
                 }
                 else {
-                    Write-Host ("Backup failed: {0}" -f $result.Message) -ForegroundColor Red
+                    Write-Host ("  FAILED: {0}" -f $result.Message) -ForegroundColor Red
                 }
             }
             if ($successCount -eq $profiles.Count) { exit 0 } else { exit 5 }
@@ -157,6 +169,22 @@ switch ($PSCmdlet.ParameterSetName) {
             Write-Host ("Backup path not found: {0}" -f $Source) -ForegroundColor Red
             exit 3
         }
+
+        # Read manifest for user context
+        $manifestPath = Join-Path $Source "manifest.json"
+        $manifest = $null
+        if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+            try { $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json } catch { }
+        }
+        $restoreLabel = $Browser
+        if ($manifest) {
+            $restoreLabel = $manifest.browser.name
+            if ($manifest.profileDisplayName -and $manifest.profileDisplayName -ne $manifest.profile) {
+                $restoreLabel = "$restoreLabel - $($manifest.profileDisplayName)"
+            }
+            if ($manifest.profileEmail) { $restoreLabel = "$restoreLabel <$($manifest.profileEmail)>" }
+        }
+        Write-Host ("  Restoring: {0}" -f $restoreLabel) -ForegroundColor Cyan
 
         $result = Restore-BrowserProfile -Browser $target -BackupPath $Source `
             -ProfileName $Profile `

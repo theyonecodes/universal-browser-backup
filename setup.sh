@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Ensure script is executable
+if [ ! -x "$0" ]; then
+    chmod +x "$0"
+fi
+
+
 echo "=========================================="
 echo "  Universal Browser Backup - Setup"
 echo "=========================================="
