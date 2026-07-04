@@ -301,21 +301,30 @@ function New-BrowserBackup {
     $backupFolder = Join-Path $Destination "${safeName}_${safeProfile}_${timestamp}"
 
     try {
-        New-Item -ItemType Directory -Path $backupFolder -Force -ErrorAction Stop | Out-Null
+      New-Item -ItemType Directory -Path $backupFolder -Force -ErrorAction Stop | Out-Null
     } catch {
-        Write-Log -Message "Cannot create backup folder '$backupFolder': $_" -Level "ERROR" -LogFile $LogFile
-        return @{ Success = $false; Message = "Cannot create backup folder: $_" }
+      Write-Log -Message "Cannot create backup folder '$backupFolder': $_" -Level "ERROR" -LogFile $LogFile
+      return @{ Success = $false; Message = "Cannot create backup folder: $_" }
+    }
+
+    # Mirror Chrome's User Data layout: profile contents under <safeProfile>/, Local State at root.
+    $profileTarget = Join-Path $backupFolder $safeProfile
+    try {
+      New-Item -ItemType Directory -Path $profileTarget -Force -ErrorAction Stop | Out-Null
+    } catch {
+      Write-Log -Message "Cannot create profile folder '$profileTarget': $_" -Level "ERROR" -LogFile $LogFile
+      return @{ Success = $false; Message = "Cannot create profile folder: $_" }
     }
 
     Write-Log -Message "Starting backup of $($Browser.Name) - $ProfileName" -Level "INFO" -LogFile $LogFile
     Write-Log -Message "Source: $($profile.FullName)" -Level "INFO" -LogFile $LogFile
-    Write-Log -Message "Destination: $backupFolder" -Level "INFO" -LogFile $LogFile
+    Write-Log -Message "Destination: $profileTarget" -Level "INFO" -LogFile $LogFile
 
 $exitCode = 0
 $redirectFile = Join-Path $backupFolder "robocopy_output.txt"
 try {
   $exitCode = Invoke-RobocopyMirror -Source $profile.FullName `
-    -Destination $backupFolder `
+    -Destination $profileTarget `
     -ExcludeDirs $ExcludeDirs `
     -Retries $RobocopyRetries `
     -Wait $RobocopyWait `

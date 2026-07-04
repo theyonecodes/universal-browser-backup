@@ -196,6 +196,20 @@ function Restore-BrowserProfile {
 
 Write-Log -Message "Restoring $($Browser.Name) - $ProfileName from $BackupPath" -Level "INFO" -LogFile $LogFile
 
+# Backup layout (matches Chrome User Data):
+#   $BackupPath\<profile name>\<profile contents>
+#   $BackupPath\Local State
+# Robocopy should mirror the profile subdirectory into the target profile path
+# (so Local State doesn't end up inside the profile). Fall back to legacy flat
+# layout if the subdirectory doesn't exist.
+$profileLeaf = Split-Path -Leaf $profile.FullName
+$profileSubdir = Join-Path $BackupPath $profileLeaf
+if (Test-Path -LiteralPath $profileSubdir -PathType Container) {
+  $robocopySource = $profileSubdir
+} else {
+  $robocopySource = $BackupPath
+}
+
 $localStateFile = Join-Path $BackupPath "Local State"
 if (Test-Path -LiteralPath $localStateFile -PathType Leaf) {
   try {
@@ -211,7 +225,7 @@ $exitCode = 0
 $redirectFile = Join-Path $BackupPath "robocopy_restore_output.txt"
     try {
         $exitCode = Invoke-RobocopyMirror `
-            -Source $BackupPath `
+            -Source $robocopySource `
             -Destination $profile.FullName `
             -Retries $RobocopyRetries `
             -Wait $RobocopyWait `

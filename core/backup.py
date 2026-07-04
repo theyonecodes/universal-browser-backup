@@ -174,6 +174,8 @@ class BackupEngine:
             "Bookmarks", "Bookmarks.bak", "History", "Login Data",
             "Preferences", "Secure Preferences", "Cookies", "Web Data"
         ]
+        if (Path(backup_path) / "Local State").exists():
+            critical_files = list(critical_files) + ["Local State"]
 
         checksums = {}
         critical_status = {}
@@ -295,12 +297,22 @@ class BackupEngine:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_folder = Path(destination) / f"{safe_browser_name}_{safe_profile}_{timestamp}"
         backup_folder.mkdir(parents=True, exist_ok=True)
+        # Chrome User Data has this shape:
+        #   User Data\Default\<profile files>
+        #   User Data\Profile N\<profile files>
+        #   User Data\Local State
+        # Mirror that layout in the backup so a /MIR restore can put files back
+        # exactly where they came from.  Profile contents go into a subdirectory
+        # whose name matches the source profile; Local State lives at the backup
+        # root alongside manifest.json.
+        profile_target = backup_folder / safe_profile
+        profile_target.mkdir(parents=True, exist_ok=True)
 
         # 3. Robocopy Args
         robocopy_args = [
             "robocopy",
             profile["full_path"],
-            str(backup_folder),
+            str(profile_target),
             "/MIR", "/NP", "/BYTES", "/NDL", "/NFL", "/NC", "/NS",
             f"/R:{config.get_default('robocopyRetries')}",
             f"/W:{config.get_default('robocopyWait')}",
@@ -327,6 +339,17 @@ class BackupEngine:
 
             if exit_code >= 8:
                 return {"success": False, "message": f"Robocopy failed with exit code {exit_code}"}
+
+            # Snapshot User Data-level "Local State" AFTER robocopy completed; robocopy
+            # /MIR would otherwise purge it (any file in destination that isn't in source
+            # gets deleted by /MIR). Stash it at the backup root so a /MIR restore can put
+            # it back at the User Data root alongside the profile subdirectory.
+            local_state_src = Path(profile["full_path"]).parent / "Local State"
+            if local_state_src.exists():
+                try:
+                    shutil.copy2(local_state_src, backup_folder / "Local State")
+                except Exception as e:
+                    log.warning(f"Could not back up Local State (non-fatal): {e}")
 
             # Create manifest
             manifest_path = cls.create_manifest(backup_folder, browser, profile["name"], exit_code, log_file, profile=profile)

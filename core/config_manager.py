@@ -106,4 +106,4 @@ class ConfigManager:
 
 # Global config instance
 config_manager = ConfigManager()
-config = config_manager.config
+config = config_manager

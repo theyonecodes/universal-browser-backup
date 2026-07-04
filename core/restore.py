@@ -125,12 +125,25 @@ class RestoreEngine:
                 return {"success": False, "message": f"Rollback creation failed: {e}"}
 
         # 4. Restore
+        # Backup layout (new in this version) mirrors Chrome User Data:
+        #     backup_path / <profile name> / Bookmarks, Cookies, ...
+        #     backup_path / Local State
+        #     backup_path / manifest.json
+        # Mirror only the profile subdirectory into profile_path (so Local State
+        # doesn't get dropped into the profile directory by /MIR).  Then copy
+        # Local State separately to one level up (User Data root).
+        profile_subdir = Path(backup_path) / Path(profile_path).name
+        if profile_subdir.exists():
+            robocopy_source = str(profile_subdir)
+        else:
+            # Legacy layout — backup contains profile files flat at root
+            robocopy_source = str(backup_path)
+
         robocopy_args = [
-            "robocopy",
-            str(backup_path),
-            str(profile_path),
+            "robocopy", robocopy_source, str(profile_path),
             "/MIR", "/NP", "/R:3", "/W:2"
         ]
+
 
         if log_file:
             robocopy_args.extend(["/LOG+:", log_file])
@@ -138,6 +151,17 @@ class RestoreEngine:
             robocopy_args.append("/LOG:restore_output.txt")
 
         log.info(f"Restoring {browser['name']} - {profile['name']}...")
+
+        # Restore User Data-level "Local State" so Chrome's profile name registry
+        # (info_cache) survives a round-trip.  Copied AFTER robocopy because /MIR
+        # would otherwise purge a file at the destination that isn't in the source.
+        ls_src = Path(backup_path) / "Local State"
+        if ls_src.exists():
+            try:
+                shutil.copy2(ls_src, Path(profile_path).parent / "Local State")
+                log.info("Restored Local State -> User Data root")
+            except Exception as e:
+                log.warning(f"Could not restore Local State (non-fatal): {e}")
 
         try:
             process = subprocess.run(robocopy_args, capture_output=True, text=True, timeout=3600)
