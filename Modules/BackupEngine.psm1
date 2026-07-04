@@ -16,16 +16,19 @@ function New-Manifest {
         [string]$ProfileEmail = ""
     )
 
-    if (-not $CriticalFiles) {
-        $CriticalFiles = @(
-            "Bookmarks", "Bookmarks.bak", "History", "Login Data",
-            "Preferences", "Secure Preferences", "Cookies", "Web Data"
-        )
-    }
+if (-not $CriticalFiles) {
+  $CriticalFiles = @(
+    "Bookmarks", "Bookmarks.bak", "History", "Login Data",
+    "Preferences", "Secure Preferences", "Cookies", "Web Data"
+  )
+}
+# If Local State was captured, include it in the manifest
+$lsPath = Join-Path $BackupPath "Local State"
+if (Test-Path -LiteralPath $lsPath -PathType Leaf) {
+  $CriticalFiles = @($CriticalFiles) + @("Local State")
+}
 
-    $manifestPath = Join-Path $BackupPath "manifest.json"
-
-    $checksums = [ordered]@{}
+$checksums = [ordered]@{}
     foreach ($file in $CriticalFiles) {
         $filePath = Join-Path $BackupPath $file
         if (Test-Path -LiteralPath $filePath -PathType Leaf) {
@@ -308,20 +311,32 @@ function New-BrowserBackup {
     Write-Log -Message "Source: $($profile.FullName)" -Level "INFO" -LogFile $LogFile
     Write-Log -Message "Destination: $backupFolder" -Level "INFO" -LogFile $LogFile
 
-    $exitCode = 0
-    $redirectFile = Join-Path $backupFolder "robocopy_output.txt"
-    try {
-        $exitCode = Invoke-RobocopyMirror -Source $profile.FullName `
-            -Destination $backupFolder `
-            -ExcludeDirs $ExcludeDirs `
-            -Retries $RobocopyRetries `
-            -Wait $RobocopyWait `
-            -LogFile $LogFile `
-            -RedirectOutput $redirectFile
-    } catch {
-        Write-Log -Message "Robocopy failed: $_" -Level "ERROR" -LogFile $LogFile
-        return @{ Success = $false; Message = "Robocopy failed: $_"; Path = $backupFolder }
-    }
+$exitCode = 0
+$redirectFile = Join-Path $backupFolder "robocopy_output.txt"
+try {
+  $exitCode = Invoke-RobocopyMirror -Source $profile.FullName `
+    -Destination $backupFolder `
+    -ExcludeDirs $ExcludeDirs `
+    -Retries $RobocopyRetries `
+    -Wait $RobocopyWait `
+    -LogFile $LogFile `
+    -RedirectOutput $redirectFile
+} catch {
+  Write-Log -Message "Robocopy failed: $_" -Level "ERROR" -LogFile $LogFile
+  return @{ Success = $false; Message = "Robocopy failed: $_"; Path = $backupFolder }
+}
+
+$localStateBackedUp = $false
+$userDataDir = Split-Path -Parent $profile.FullName
+$srcLocalState = Join-Path $userDataDir "Local State"
+if (Test-Path -LiteralPath $srcLocalState -PathType Leaf) {
+  try {
+    Copy-Item -LiteralPath $srcLocalState -Destination (Join-Path $backupFolder "Local State") -Force -ErrorAction Stop
+    $localStateBackedUp = $true
+  } catch {
+    Write-Log -Message "Could not back up Local State (non-fatal): $_" -Level "WARN" -LogFile $LogFile
+  }
+}
 
     if ($exitCode -ge 8) {
         Write-Log -Message "Backup failed (robocopy exit code: $exitCode)" -Level "ERROR" -LogFile $LogFile

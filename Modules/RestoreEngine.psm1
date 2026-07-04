@@ -194,10 +194,21 @@ function Restore-BrowserProfile {
         }
     }
 
-    Write-Log -Message "Restoring $($Browser.Name) - $ProfileName from $BackupPath" -Level "INFO" -LogFile $LogFile
+Write-Log -Message "Restoring $($Browser.Name) - $ProfileName from $BackupPath" -Level "INFO" -LogFile $LogFile
 
-    $exitCode = 0
-    $redirectFile = Join-Path $BackupPath "robocopy_restore_output.txt"
+$localStateFile = Join-Path $BackupPath "Local State"
+if (Test-Path -LiteralPath $localStateFile -PathType Leaf) {
+  try {
+    $userDataRoot = Split-Path -Parent $profile.FullName
+    Copy-Item -LiteralPath $localStateFile -Destination (Join-Path $userDataRoot "Local State") -Force -ErrorAction Stop
+    Write-Log -Message "Restored Local State -> User Data root ($userDataRoot)" -Level "INFO" -LogFile $LogFile
+  } catch {
+    Write-Log -Message "Could not restore Local State (non-fatal): $_" -Level "WARN" -LogFile $LogFile
+  }
+}
+
+$exitCode = 0
+$redirectFile = Join-Path $BackupPath "robocopy_restore_output.txt"
     try {
         $exitCode = Invoke-RobocopyMirror `
             -Source $BackupPath `
