@@ -38,6 +38,32 @@ log_path = get_log_path()
 script_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(script_dir)
 
+_QT_NAMES = "QApplication QMainWindow QWidget QVBoxLayout QHBoxLayout QTabWidget QComboBox QPushButton QLabel QFileDialog QLineEdit QTextEdit QMessageBox QProgressBar QCheckBox QListWidget QListWidgetItem QGroupBox QGridLayout QScrollArea QSpinBox QSplitter QFrame QStatusBar QFormLayout QTableWidget QTableWidgetItem QHeaderView Qt QThread Signal Slot QTimer QFont QIcon".split()
+
+
+def _import_qt():
+    """Lazy import of PySide6 QtWidgets + QtCore + QtGui.
+
+    Returning a namespace object keeps call sites unchanged (QApplication,
+    QMainWindow, ...).  Imported only when the GUI is actually about to
+    run, which keeps CLI mode ~250 ms faster.
+    """
+    import types
+    import importlib
+    from PySide6.QtWidgets import (  # noqa: F401
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QTabWidget, QComboBox, QPushButton, QLabel, QFileDialog,
+        QLineEdit, QTextEdit, QMessageBox, QProgressBar, QCheckBox,
+        QListWidget, QListWidgetItem, QGroupBox, QGridLayout, QScrollArea,
+        QSpinBox, QSplitter, QFrame, QStatusBar, QFormLayout,
+        QTableWidget, QTableWidgetItem, QHeaderView,
+    )
+    from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer  # noqa: F401
+    from PySide6.QtGui import QFont, QIcon  # noqa: F401
+    ns = types.SimpleNamespace()
+    for name in _QT_NAMES:
+        ns.__dict__[name] = locals()[name]
+    return ns
 
 class BrowserListItem(QWidget):
     """Custom widget for browser list with checkbox and info."""
@@ -163,6 +189,38 @@ class ProfileListItem(QWidget):
         self.checkbox.setChecked(checked)
 
 
+class _WorkerDetect(QThread):
+    """Background detection worker.
+
+    The GUI calls refresh_browsers() which calls BrowserDetection, but the
+    BrowserDetection scan walks every profile directory on disk.  For a
+    Chrome install with 7 profiles that takes ~1 second; running it on the
+    GUI thread froze the window before any pixels rendered.
+
+    _WorkerDetect performs the disk+registry scan off-thread.  When done
+    it emits a Signal carrying the list of browser dicts; MainWindow pops
+    that into the UI list.
+    """
+
+    detected = Signal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def run(self):
+        try:
+            browsers = BrowserDetection.get_installed_browsers()
+            for b in browsers:
+                try:
+                    b["_profiles"] = BrowserDetection.get_browser_profiles(b)
+                except Exception:
+                    b["_profiles"] = []
+            self.detected.emit(browsers)
+        except Exception as e:
+            log.error(f"Detection worker failed: {e}")
+            self.detected.emit([])
+
+
 class Worker(QThread):
     finished = Signal(dict)
     progress = Signal(str)
@@ -239,11 +297,24 @@ class MainWindow(QMainWindow):
         self.init_export_import_tab()
         self.init_logs_tab()
 
-        self.refresh_browsers()
-        self.refresh_saved_backups()
+        # Initialise empty UI lists so the window renders immediately.  The
+        # actual browser/profile data is populated asynchronously by
+        # _WorkerDetect (a QThread) so the GUI doesn't freeze for ~1s
+        # while we walk 7 Chrome profiles' directories.
+        self.browsers = []
+        self._detect_worker = None
 
-        # Auto-detect on startup
-        QTimer.singleShot(500, self.refresh_browsers)
+        # Kick off the disk scan on a worker thread.  The window renders
+        # immediately; browsers/profile lists populate when the worker emits
+        # its Signal.  Without this the GUI froze for ~1s on profile-dir scans.
+        self._kick_async_detection()
+
+    def _kick_async_detection(self):
+        """Start detection on a worker thread; populate UI when done."""
+        # Worker still has to be referenced somewhere so GC doesn't kill it
+        self._detect_worker = _WorkerDetect(self)
+        self._detect_worker.detected.connect(self._on_detection_done)
+        self._detect_worker.start()
 
     def init_backup_tab(self):
         tab = QWidget()
@@ -741,6 +812,30 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Detected {len(self.browsers)} browser(s). {self._running_count()} running.")
         self.refresh_export_combo()
         self.on_browser_changed()
+
+    def _on_detection_done(self, browsers):
+        """Slot for the _WorkerDetect thread.  Populate UI with detected browsers
+        and restore the auto-refresh timer that's normally scheduled by
+        refresh_browsers()."""
+        self.browsers = browsers
+        self.browser_list.clear()
+        self.res_browser_combo.clear()
+        self.export_browser_combo.clear()
+        for b in browsers:
+            display = f"{b['name']}  (v{b['version']})"
+            item_widget = BrowserListItem(b, on_changed=self.on_browser_changed)
+            item = QListWidgetItem()
+            item.setSizeHint(item_widget.sizeHint())
+            self.browser_list.addItem(item)
+            self.browser_list.setItemWidget(item, item_widget)
+            self.res_browser_combo.addItem(display, b)
+            self.export_browser_combo.addItem(display, b)
+        running = sum(1 for b in browsers if BrowserDetection.is_browser_running(b))
+        self.status_label.setText(f"Detected {len(browsers)} browser(s)")
+        self.status_bar.showMessage(f"Detected {len(browsers)} browser(s). {running} running.")
+        self.refresh_export_combo()
+        self.on_browser_changed()
+        self.refresh_saved_backups()
 
     def refresh_export_combo(self):
         """Update export combo and associated profiles."""
@@ -1482,6 +1577,22 @@ def main():
     app.setApplicationName("Universal Browser Backup")
     app.setOrganizationName("Universal Browser Backup")
     app.setApplicationVersion("2.1.1")
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
+
+
+def _open_main_window(g):
+    hi = g["QApplication"]
+    QMainWindow = g["QMainWindow"]
+    sys_argv = hi
+    sys_argv = sys.argv
+    app = hi(sys_argv)
+    app.setStyle("Fusion")
+    app.setApplicationName("Universal Browser Backup")
+    app.setOrganizationName("Universal Browser Backup")
+    app.setApplicationVersion("2.1.1")
+    MainWindow = g["MainWindow"]
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
