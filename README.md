@@ -1,4 +1,4 @@
-# Universal Browser Backup v2.1.1
+# Universal Browser Backup v2.2.0
 
 A PowerShell + Python tool to back up, restore, verify, compare, schedule, and export browser profiles across Chromium and Gecko browsers on Windows 10/11.
 
@@ -8,14 +8,25 @@ A PowerShell + Python tool to back up, restore, verify, compare, schedule, and e
   | | | |/ _ \| '_ \ / _ \|  _ \ / _` | '__/ _` | '_ ` _ \| | '_ \
   | |_| | (_) | | | | (_) | |_) | (_| | | | (_| | | | | | | | | | |
    \___/ \___/|_| |_|\___/|____/ \__,_|_|  \__,_|_| |_| |_|_|_| |_|
-              Browser backup · restore · verify · schedule
+               Browser backup · restore · verify · schedule
 ```
+
+---
+
+## 🆕 New in v2.2.0 — Toolkit Integration
+
+| Feature | Description |
+|---------|-------------|
+| **🛡️ Shared BackupEngine** | Now uses `theyonecodes/toolkit` BackupEngine — automatic registry/file/BCD/EFI backups with SHA-256 manifest + rollback |
+| **🤖 Jev Router Triage** | AI model routing with Choice/Score/Noul primitives — confidence scoring, guardrails, human review triggers |
+| **🎨 Consistent DarkTheme** | PySide6 GUI now uses `theyonecodes/toolkit` DarkTheme (shared with CISO-Auditor) |
+| **🔄 Reusable Core** | Core backup/restore logic migrated to `theyonecodes/toolkit` for use across Windows-Super-Smooth, electron-gpu-crash-fix, pkgdrop, CISO-Auditor |
 
 ---
 
 ## Features
 
-- **Auto-detection** of every Chromium and Gecko browser installed locally — Chrome, Edge, Firefox, Brave, Vivaldi, Opera, Arc, Floorp, Zen, Thorium, Ladybird and 20 + more
+- **Auto-detection** of every Chromium and Gecko browser installed locally — Chrome, Edge, Firefox, Brave, Vivaldi, Opera, Arc, Floorp, Zen, Thorium, Ladybird and 20+ more
 - **Multi-profile** — back up individual profiles or every profile at once
 - **Multi-browser select** — tick several browsers in the GUI and back them all up in one click
 - **Two GUI front-ends** — native WPF dark-theme (PowerShell) and PySide6 (Python); both produce identical backups
@@ -32,27 +43,61 @@ A PowerShell + Python tool to back up, restore, verify, compare, schedule, and e
 
 ---
 
-## Table of Contents
+## 🛡️ Shared BackupEngine (New)
 
-1. [Quick Start](#quick-start)
-2. [Detailed Usage](#detailed-usage)
-   - [Option A — PowerShell GUI](#option-a--powershell-gui)
-   - [Option B — Python GUI (recommended for advanced features)](#option-b--python-gui-recommended-for-advanced-features)
-   - [Option C — CLI mode (PowerShell)](#option-c--cli-mode-powershell)
-   - [Option D — CLI mode (Python)](#option-d--cli-mode-python)
-3. [How Backups Work](#how-backups-work)
-4. [How Restore Works](#how-restore-works)
-5. [How Verification Works](#how-verification-works)
-6. [How Comparison Works](#how-comparison-works)
-7. [How Schedule Works](#how-schedule-works)
-8. [How Export / Import Works](#how-export--import-works)
-9. [Project Structure](#project-structure)
-10. [Configuration](#configuration)
-11. [CLI Reference](#cli-reference)
-12. [Testing](#testing)
-13. [Troubleshooting](#troubleshooting)
-14. [Requirements](#requirements)
-15. [License](#license)
+The core backup/restore engine now lives in `theyonecodes/toolkit` and provides:
+
+| Feature | Description |
+|---------|-------------|
+| **Automatic backups** | Before any file/registry/BCD/EFI change |
+| **SHA-256 manifest** | Every backed-up item has a hash |
+| **Automatic rollback** | On failure, restores from backup |
+| **Cross-platform** | Python + PowerShell implementations |
+| **Reusable** | Used by Windows-Super-Smooth, electron-gpu-crash-fix, CISO-Auditor, pkgdrop |
+
+```python
+# Python usage
+from toolkit.backup_engine import invoke_with_backup
+
+result = invoke_with_backup(
+    tool_name="my-tool",
+    description="Backup Chrome profile",
+    action=lambda: backup_chrome(),
+    file_paths=[r"%LOCALAPPDATA%\Google\Chrome\User Data\Default"],
+    backup_bcd=False
+)
+```
+
+```powershell
+# PowerShell usage
+Import-Module "$toolkitPath\backup-engine\powershell\BackupEngine.psm1"
+
+Invoke-WithBackup -ToolName "universal-browser-backup" `
+    -Description "Backup Chrome profile" `
+    -FilePaths @("$env:LOCALAPPDATA\Google\Chrome\User Data\Default") `
+    -ActionScriptBlock { robocopy ... }
+```
+
+---
+
+## 🤖 Jev Router Triage (New)
+
+AI model routing with Choice/Score/Noul primitives for backup/restore operations:
+
+| Primitive | Purpose |
+|-----------|---------|
+| **Choice** | Select model for task (local vs OpenCode vs cloud) |
+| **Score** | Confidence 0-100% based on capability match, cost, latency |
+| **Noul** | Guardrails: if confidence < 70% → human review; if sensitive → human review |
+
+**GUI Integration:**
+- **Backup tab** → "JEV TRIAGE" button → confidence scoring for selected profiles
+- **Restore tab** → "JEV TRIAGE" button → risk assessment for restore operation
+
+**CLI Usage:**
+```cmd
+python vendor\toolkit\jev-router\jev_router.py --choice system_optimization --context "{\"task_type\":\"browser_backup\",\"sensitive\":true,\"target_profiles\":[\"Chrome/Default\",\"Edge/Default\"]}"
+```
 
 ---
 
@@ -108,8 +153,8 @@ The Python GUI has **seven tabs**:
 
 | # | Tab | What it does |
 |---|-----|--------------|
-| 1 | **Backup** | Pick 1+ browsers → pick profiles → choose destination → start. Shows progress bar and live status. |
-| 2 | **Restore** | Pick the target browser + profile → pick a backup folder → start. Rolls back automatically on failure. |
+| 1 | **Backup** | Pick 1+ browsers → pick profiles → choose destination → start. Shows progress bar and live status. **JEV TRIAGE** button for AI confidence scoring. |
+| 2 | **Restore** | Pick the target browser + profile → pick a backup folder → start. Rolls back automatically on failure. **JEV TRIAGE** button for risk assessment. |
 | 3 | **Verify** | Pick any backup folder → SHA-256 re-hash is run and the result is printed in the log. |
 | 4 | **Backups** | List every backup produced. **Compare Two** opens a file-level added/removed/modified diff between any two folders. |
 | 5 | **Schedule** | Set an interval (in minutes) and a destination; backups of **every** detected browser run on schedule. |
@@ -307,9 +352,16 @@ UniversalBrowserBackup/
 ├── core/                         # Python implementation (parity with Modules/)
 │   ├── config_manager.py
 │   ├── detection.py
-│   ├── backup.py                 # + verify / compare / zip export+import
-│   ├── restore.py
+│   ├── backup.py                 # Now uses toolkit BackupEngine
+│   ├── restore.py                # Now uses toolkit BackupEngine
 │   └── logger.py
+│
+├── vendor/
+│   └── toolkit/                  # Git submodule (theyonecodes/toolkit)
+│       ├── backup-engine/
+│       ├── gui/dark-theme/
+│       ├── jev-router/
+│       └── ...
 │
 ├── Tests/
 │   └── BackupEngine.Tests.ps1    # Pester — 18 tests
@@ -348,13 +400,13 @@ Override any field by copying `Config\browsers.json` to `%APPDATA%\UniversalBrow
 | `processNames` | `DisplayName → process.exe` mapping for robust browser detection. |
 | `browsers[]` | **New format** — 46 browser definitions with `detectStrategy`, `profilePath`, `exePath`, `engineFamily`. |
 
-### Manifest v2.1.1
+### Manifest v2.2.0
 
 Every backup creates `manifest.json` with:
 
 ```json
 {
-  "version": "2.1.1",
+  "version": "2.2.0",
   "created": "2026-07-03T12:00:00Z",
   "browser": "Chrome",
   "profile": "Default",
@@ -365,13 +417,18 @@ Every backup creates `manifest.json` with:
     "diskFreeGB": 45.2,
     "processName": "chrome.exe"
   },
-  "checksums": { ... }
+  "checksums": { ... },
+  "toolkit": {
+    "backupEngine": "theyonecodes/toolkit@v0.1.0",
+    "jevRouter": "theyonecodes/toolkit@v0.1.0"
+  }
 }
 ```
 
 - **vTag** — short human-readable identifier (`browser-profile`)
 - **selectionHash** — SHA-256 truncated to 16 chars; changes if browser/profile/destination selection changes
 - **preflight** — snapshot of pre-backup conditions for diagnostics
+- **toolkit** — versions of shared components used
 
 ---
 

@@ -18,8 +18,8 @@ from PySide6.QtGui import QFont, QIcon
 
 from core.detection import BrowserDetection
 from core.config_manager import config_manager, config
-from core.backup import BackupEngine, list_backups
-from core.restore import RestoreEngine
+from core.backup import BackupEngine, list_backups, TOOLKIT_AVAILABLE, run_jev_triage as backup_jev_triage
+from core.restore import RestoreEngine, run_jev_triage as restore_jev_triage
 from core.logger import get_logger, get_log_path
 
 log = get_logger()
@@ -247,6 +247,18 @@ class MainWindow(QMainWindow):
         self.btn_refresh = QPushButton("Refresh")
         self.btn_refresh.clicked.connect(self.refresh_browsers)
         browser_toolbar.addWidget(self.btn_refresh)
+        
+        # Jev Triage button
+        if TOOLKIT_AVAILABLE:
+            self.btn_jev_triage = QPushButton("JEV TRIAGE")
+            self.btn_jev_triage.setStyleSheet(
+                "QPushButton { background-color: #D29922; color: white; font-weight: bold; font-size: 12px; border-radius: 4px; padding: 4px 12px; }"
+                "QPushButton:hover { background-color: #E3A833; }"
+            )
+            self.btn_jev_triage.clicked.connect(self.run_jev_triage_backup)
+            self.btn_jev_triage.setToolTip("Run AI triage for this backup operation (confidence scoring, guardrails)")
+            browser_toolbar.addWidget(self.btn_jev_triage)
+        
         browser_layout.addLayout(browser_toolbar)
 
         self.browser_list = QListWidget()
@@ -385,6 +397,18 @@ class MainWindow(QMainWindow):
         self.btn_browse_src = QPushButton("Browse...")
         self.btn_browse_src.clicked.connect(self.browse_source)
         src_layout.addWidget(self.btn_browse_src)
+        
+        # Jev Triage button for restore
+        if TOOLKIT_AVAILABLE:
+            self.btn_jev_triage_restore = QPushButton("JEV TRIAGE")
+            self.btn_jev_triage_restore.setStyleSheet(
+                "QPushButton { background-color: #D29922; color: white; font-weight: bold; font-size: 12px; border-radius: 4px; padding: 4px 12px; }"
+                "QPushButton:hover { background-color: #E3A833; }"
+            )
+            self.btn_jev_triage_restore.clicked.connect(self.run_jev_triage_restore)
+            self.btn_jev_triage_restore.setToolTip("Run AI triage for this restore operation")
+            src_layout.addWidget(self.btn_jev_triage_restore)
+        
         layout.addWidget(src_group)
 
         opt_group = QGroupBox("Options")
@@ -792,6 +816,52 @@ class MainWindow(QMainWindow):
                 })
         return selected
 
+    def run_jev_triage_backup(self):
+        """Run Jev Router triage for the current backup selection."""
+        if not TOOLKIT_AVAILABLE:
+            QMessageBox.warning(self, "Jev Router", "Jev Router not available (toolkit not found)")
+            return
+
+        selected = self.get_selected_profiles()
+        if not selected:
+            QMessageBox.warning(self, "Jev Triage", "Please select at least one browser profile first.")
+            return
+
+        # Build context for Jev Router
+        apps = [f"{s['browser']['name']}/{s['profile']['name']}" for s in selected]
+        
+        def worker():
+            try:
+                context = {
+                    "task_type": "browser_backup",
+                    "sensitive": True,
+                    "target_profiles": apps,
+                    "required_capabilities": ["system_admin", "file_ops", "profile_knowledge", "robocopy"]
+                }
+                from core.backup import run_jev_triage
+                result = run_jev_triage(apps[0].split('/')[0] if apps else "Chrome", 
+                                      apps[0].split('/')[1] if '/' in apps[0] else "Default", 
+                                      "backup")
+                
+                # Show result in UI
+                msg = f"Jev Triage Result:\n\n"
+                if "error" in result:
+                    msg += f"Error: {result['error']}"
+                else:
+                    msg += f"Model: {result.get('model', 'N/A')}\n"
+                    msg += f"Confidence: {result.get('confidence', 0)*100:.0f}%\n"
+                    msg += f"Reasoning: {result.get('reasoning', 'N/A')}\n"
+                    if result.get('requires_human'):
+                        msg += "\n⚠ HUMAN REVIEW REQUIRED"
+                    if result.get('guardrails'):
+                        msg += f"\nGuardrails: {', '.join(result['guardrails'])}"
+                
+                QMessageBox.information(self, "Jev Triage Result", msg)
+            
+            threading.Thread(target=worker, daemon=True).start()
+        
+        worker()
+
     def browse_destination(self):
         self.browse_into(self.dest_edit, "Select Backup Destination")
 
@@ -799,6 +869,53 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Select Backup Folder (containing manifest.json)")
         if path:
             self.src_edit.setText(path)
+
+    def run_jev_triage_restore(self):
+        """Run Jev Router triage for the current restore selection."""
+        if not TOOLKIT_AVAILABLE:
+            QMessageBox.warning(self, "Jev Router", "Jev Router not available (toolkit not found)")
+            return
+
+        browser = self.res_browser_combo.currentData()
+        item = self.res_profile_list.currentItem()
+        
+        if not browser or not item:
+            QMessageBox.warning(self, "Jev Triage", "Please select a browser and profile first.")
+            return
+
+        profile = item.data(Qt.UserRole)
+        
+        def worker():
+            try:
+                context = {
+                    "task_type": "browser_restore",
+                    "sensitive": True,
+                    "browser": browser['name'],
+                    "profile": profile['name'],
+                    "required_capabilities": ["system_admin", "file_ops", "profile_knowledge", "robocopy"]
+                }
+                from core.restore import run_jev_triage
+                result = run_jev_triage(browser['name'], profile['name'], "restore")
+                
+                msg = f"Jev Triage Result (Restore):\n\n"
+                if "error" in result:
+                    msg += f"Error: {result['error']}"
+                else:
+                    msg += f"Model: {result.get('model', 'N/A')}\n"
+                    msg += f"Confidence: {result.get('confidence', 0)*100:.0f}%\n"
+                    msg += f"Reasoning: {result.get('reasoning', 'N/A')}\n"
+                    if result.get('requires_human'):
+                        msg += "\n⚠ HUMAN REVIEW REQUIRED"
+                    if result.get('guardrails'):
+                        msg += f"\nGuardrails: {', '.join(result['guardrails'])}"
+                
+                QMessageBox.information(self, "Jev Triage Result", msg)
+            except Exception as e:
+                QMessageBox.critical(self, "Jev Error", f"Jev triage failed: {e}")
+            
+            threading.Thread(target=worker, daemon=True).start()
+        
+        worker()
 
     def browse_into(self, line_edit, title="Select Destination"):
         path = QFileDialog.getExistingDirectory(self, title)
