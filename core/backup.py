@@ -10,9 +10,17 @@ import os
 import json
 import hashlib
 import shutil
+import base64
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any, Optional
+
+# Encryption
+try:
+    from core.encryption import encrypt_file, generate_recovery_key
+    ENCRYPTION_AVAILABLE = True
+except ImportError:
+    ENCRYPTION_AVAILABLE = False
 
 # Try to import from toolkit first
 TOOLKIT_AVAILABLE = False
@@ -155,18 +163,27 @@ if not TOOLKIT_AVAILABLE:
 
         @classmethod
         def backup_profile(cls, profile_path, backup_root, browser_name, profile_name,
-                          exclude_dirs=None, progress_callback=None, cancel_flag=None):
-            """Main backup entry point — now uses toolkit if available."""
+                          exclude_dirs=None, progress_callback=None, cancel_flag=None,
+                          encryption_password=None, encrypt_critical_only=True):
+            """Main backup entry point — now uses toolkit if available.
+            
+            Args:
+                encryption_password: If provided, encrypt critical files (Login Data, Cookies, etc.)
+                encrypt_critical_only: If True, only encrypt CRITICAL_FILES; if False, encrypt all files
+            """
             if TOOLKIT_AVAILABLE:
                 return cls._backup_with_toolkit(profile_path, backup_root, browser_name, profile_name,
-                                               exclude_dirs, progress_callback, cancel_flag)
+                                               exclude_dirs, progress_callback, cancel_flag,
+                                               encryption_password, encrypt_critical_only)
             else:
                 return cls._backup_local(profile_path, backup_root, browser_name, profile_name,
-                                        exclude_dirs, progress_callback, cancel_flag)
+                                        exclude_dirs, progress_callback, cancel_flag,
+                                        encryption_password, encrypt_critical_only)
 
         @staticmethod
         def _backup_with_toolkit(profile_path, backup_root, browser_name, profile_name,
-                                exclude_dirs, progress_callback, cancel_flag):
+                                exclude_dirs, progress_callback, cancel_flag,
+                                encryption_password=None, encrypt_critical_only=True):
             """Use toolkit's BackupEngine for backup with full manifest + rollback."""
             from toolkit.backup_engine.python.backup_engine import invoke_with_backup
             
@@ -185,13 +202,19 @@ if not TOOLKIT_AVAILABLE:
                     default_exclusions.update(exclude_dirs)
 
                 manifest = {
-                    "version": "2.1",
+                    "version": "2.2",
                     "browser": {"name": browser_name, "profile": profile_name, "type": "Chromium"},
                     "timestamp": datetime.now().isoformat(),
                     "source_path": str(profile),
                     "backup_path": str(backup_dir),
                     "checksums": {},
                     "excluded_dirs": list(default_exclusions),
+                    "encryption": {
+                        "enabled": encryption_password is not None,
+                        "algorithm": "AES-256-GCM",
+                        "critical_only": encrypt_critical_only,
+                        "encrypted_files": {}
+                    }
                 }
 
                 total_files = sum(1 for _ in profile.rglob("*") if _.is_file())
@@ -210,9 +233,27 @@ if not TOOLKIT_AVAILABLE:
 
                     dst = backup_dir / rel
                     dst.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Determine if this file should be encrypted
+                    should_encrypt = False
+                    if encryption_password and ENCRYPTION_AVAILABLE:
+                        if encrypt_critical_only:
+                            should_encrypt = f.name in CRITICAL_FILES
+                        else:
+                            should_encrypt = True
+                    
                     try:
-                        shutil.copy2(f, dst)
-                        manifest["checksums"][str(rel)] = hashlib.sha256(f.read_bytes()).hexdigest()
+                        if should_encrypt:
+                            # Encrypt the file
+                            from core.encryption import encrypt_file
+                            enc_meta = encrypt_file(str(f), str(dst), encryption_password)
+                            # Store original checksum before encryption
+                            original_checksum = hashlib.sha256(f.read_bytes()).hexdigest()
+                            manifest["checksums"][str(rel)] = original_checksum
+                            manifest["encryption"]["encrypted_files"][str(rel)] = enc_meta
+                        else:
+                            shutil.copy2(f, dst)
+                            manifest["checksums"][str(rel)] = hashlib.sha256(f.read_bytes()).hexdigest()
                     except Exception as e:
                         manifest["checksums"][str(rel)] = f"ERROR: {e}"
 
@@ -244,7 +285,8 @@ if not TOOLKIT_AVAILABLE:
 
         @staticmethod
         def _backup_local(profile_path, backup_root, browser_name, profile_name,
-                         exclude_dirs, progress_callback, cancel_flag):
+                         exclude_dirs, progress_callback, cancel_flag,
+                         encryption_password=None, encrypt_critical_only=True):
             """Original local backup implementation."""
             # ... (original implementation preserved as fallback)
             pass
