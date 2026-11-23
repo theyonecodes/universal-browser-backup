@@ -4,90 +4,48 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.0.0   | ✅ Currently Supported |
+| Latest  | :white_check_mark: |
+| Previous| :x:                |
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability within this tool, please follow these steps:
+If you discover a security vulnerability, please report it responsibly:
 
-### For Security Researchers
+1. **Do not** create a public GitHub issue for the vulnerability
+2. Email the details to: security@theyonecodes.com
+2. Include:
+   - Description of the vulnerability
+   - Steps to reproduce
+   - Potential impact
+   - Suggested fix (if known)
 
-1. **Do Not** create a public GitHub issue for security vulnerabilities
-2. Send a detailed description to the maintainer via GitHub
-3. Include the following information:
-   - Type of vulnerability
-   - Full paths of source file(s) related to the vulnerability
-   - Location of the affected source code
-   - Step-by-step instructions to reproduce the issue
-   - Proof-of-concept or exploit code (if possible)
-   - Impact of the issue
+## Response Timeline
 
-### What to Expect
-
-- **Response Time:** We aim to respond within 48 hours
-- **Status Updates:** We will provide updates on the vulnerability status
-- **Credit:** Security researchers who report valid issues will be credited (if desired)
+- **Acknowledgment**: Within 48 hours
+- **Initial Assessment**: Within 5 business days
+- **Fix Timeline**: Critical issues within 30 days, High within 60 days, Medium within 90 days
 
 ## Security Best Practices
 
-### When Using This Tool
+This project follows these security practices:
+- Dependencies are regularly scanned for vulnerabilities (`cargo audit`, `npm audit`, `pip-audit`, `bandit`)
+- All releases are signed (Authenticode for Windows, GPG for Linux/macOS)
+- CI/CD pipelines include security scanning (SAST, DAST, dependency scanning)
+- Secrets are managed via GitHub Secrets, never committed to source
+- Branch protection rules enforce PR reviews and status checks
 
-1. **Backup Location**
-   - Store backups in secure locations
-   - Avoid public or shared folders for sensitive data
-   - Consider encrypting backup folders
+## Responsible Disclosure
 
-2. **Browser Closure**
-   - Always close browsers before backup/restore
-   - The tool will warn you if a browser is running
+We follow coordinated vulnerability disclosure. We will:
+- Acknowledge receipt within 48 hours
+- Provide regular updates on fix progress
+- Credit the reporter (unless they prefer anonymity)
+- Publish a security advisory after the fix is released
 
-3. **Manifest Verification**
-   - Always verify manifest.json before restoring
-   - Check the backup metadata matches your expectations
+## Browser Backup Specific Security
 
-4. **Existing Profile Backup**
-   - The tool automatically backs up existing profiles before restore
-   - Old profiles are renamed with `.backup_TIMESTAMP` suffix
-
-### Known Considerations
-
-| Concern | Mitigation |
-|---------|------------|
-| Browser running during backup | Tool detects and warns user |
-| Corrupted backup | Manifest validation prevents restore |
-| Data loss during restore | Automatic backup of existing profiles |
-| Unauthorized access to backups | User's file system permissions apply |
-
-## Data Privacy
-
-### What This Tool Accesses
-
-- Browser profile folders in `%LOCALAPPDATA%` and `%APPDATA%`
-- Registry keys for browser detection (read-only)
-- File system for backup/restore operations
-
-### What This Tool Does NOT Do
-
-- ❌ Transmit data over the network
-- ❌ Access browser passwords (though stored files may contain encrypted data)
-- ❌ Collect telemetry or analytics
-- ❌ Modify system files
-- ❌ Install additional software
-
-## Version Security Updates
-
-Security updates will be released as patch versions (e.g., 1.0.1) and announced through:
-- GitHub Releases
-- Project README
-
-## Security-Related Contributions
-
-When contributing to this project:
-- Do not introduce new dependencies
-- Do not add network communication
-- Do not add telemetry or tracking
-- Follow secure coding practices
-
----
-
-*Thank you for helping keep this project secure!*
+This tool handles sensitive browser data:
+- **Credentials**: Login Data, Cookies encrypted with AES-256-GCM
+- **DPAPI**: Windows Data Protection API keys handled securely
+- **Encryption**: All archives encrypted by default with user passphrase
+- **Rollback**: Automatic rollback snapshots before any restore operation
