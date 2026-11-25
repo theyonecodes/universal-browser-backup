@@ -857,10 +857,10 @@ class MainWindow(QMainWindow):
                         msg += f"\nGuardrails: {', '.join(result['guardrails'])}"
                 
                 QMessageBox.information(self, "Jev Triage Result", msg)
-            
-            threading.Thread(target=worker, daemon=True).start()
+            except Exception as e:
+                QMessageBox.critical(self, "Jev Error", f"Jev triage failed: {e}")
         
-        worker()
+        threading.Thread(target=worker, daemon=True).start()
 
     def browse_destination(self):
         self.browse_into(self.dest_edit, "Select Backup Destination")
